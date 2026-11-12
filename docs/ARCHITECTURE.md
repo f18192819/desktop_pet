@@ -1,38 +1,51 @@
-# 架构与后续接入
+# 架构 · 第二阶段
 
-## 进程边界
+沿用 Electron 主进程 / 沙箱 Preload / React Renderer，新增聊天模块，不迁移框架，不增加 SDK 或数据库依赖。
 
-- 主进程：唯一设置存储、窗口位置、多显示器、托盘、菜单、状态机、未来认证与 Agent 运行时。
-- 沙箱 Preload：只暴露 `DesktopPetAPI` 的命名方法。通道白名单固定，事件回调剥离 Electron Event，订阅返回取消函数。
-- Renderer：React UI、PNG decode、Canvas 绘制、鼠标意图。不能直接访问 Node、文件系统、Shell 或令牌。
+## 进程与 IPC
 
-桌宠和各面板使用 `contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`、`webSecurity: true`。主进程同时校验 webContents、主框架、本地页面 URL、功能对应的窗口角色和参数。
+主进程拥有窗口、状态机、服务配置、凭据、API 请求、会话及请求生命周期。Preload 只暴露 DesktopPetAPI 命名方法，事件剥离 Electron Event 并返回取消订阅函数。Renderer 只负责 UI、动画和用户意图，无法直接访问 Node、文件系统、Shell 或已保存 Key。
 
-通过安全 `emma://app/` 协议加载构建目录内资源，拒绝路径越界、未知 host 与非 GET 请求。CSP 仅允许本应用脚本、样式和图片，`connect-src 'none'`。禁止导航、新窗口和 webview，拒绝所有权限请求。不使用 dev server，不开放网络端口。
+所有窗口保留 contextIsolation、sandbox、webSecurity、禁用 nodeIntegration，CSP 保留 connect-src 'none'。emma://app/ 仅加载构建目录内资源，拒绝越界和未知 host。禁止导航、新窗口、webview 和权限请求，不开放网络端口。
 
-设置 IPC 只接受指定键和范围，不接受路径、命令、位置或任意通道。拖动只发送开始/结束，坐标由主进程读取 Electron `screen.getCursorScreenPoint()`；Renderer 无权移动任意窗口。
+既有 authorize 校验 webContents、主框架、本地 URL 和角色，新增方法校验白名单、类型、长度、UUID、URL。服务配置/清 Key/连接测试仅设置窗口可调用；模型/额度/非敏感状态允许聊天和设置调用；所有会话操作仅聊天可调用。广播按角色隔离，桌宠无 AI 数据，设置无聊天记录。
 
-## 桌宠窗口
+## Provider
 
-无边框、透明、默认置顶、不在任务栏显示、无菜单和窗口阴影。240×240 DIP 与显示器缩放保持一致。不将鼠标全局穿透，保留 Canvas 完整交互区。
+integrations/contracts.ts 的 ChatProvider 接受完整 messages 与 AbortSignal，返回 text / usage / done，另提供 listModels、testConnection、getBalance。AgentRuntime、PermissionManager 仅保留旧接口，未实现执行能力。
 
-拖动由主进程 16ms 采样；Renderer 仅提供鼠标按下时的窗口内抓取点，主进程校验其在窗口范围内，结合真实窗口位置计算锚点；松开时再补采样一次，避免快速拖动丢失首尾位移。达到 5 DIP 阈值后进入 dragged。指针捕获确保窗口移动后仍可接收抬起事件；取消、失去捕获、窗口失焦、隐藏及退出均结束拖动，并有 2 分钟兜底。松开才约束到目标显示器，允许跨屏移动。窗口位置与大小在屏幕增加、移除、分辨率/缩放改变时重新约束到可见工作区，支持负坐标。
+OpenAICompatibleProvider 使用原生 fetch，向 `{baseUrl}/chat/completions` POST model/messages/stream。TextDecoder 流式解码 UTF-8；SSEParser 支持跨块 CR/LF/CRLF、多行 data、注释和尾块。处理 delta.content/refusal、finish_reason、usage、[DONE]；有 finish_reason 的 EOF 兼容完成，无结束信号视为截断。错误 JSON、流中 error、异常结构和工具调用报错，不执行工具。
 
-Windows 显式使用 `pop-up-menu` 置顶层级，避免 `floating` 的“排到任务栏后方”逻辑清除原生 topmost 状态。角色停留范围仍被限制在显示器工作区内。启动器会移除开发宿主可能设置的 `ELECTRON_RUN_AS_NODE`，并以可见 GUI 方式启动 Electron；不能给 GUI 进程传隐藏启动标志，否则首次 ShowWindow 可能被 Windows 忽略。
+取消和总超时共同覆盖响应头与整个响应体，finally 清理计时器、取消 reader 并释放锁。JSON 响应上限 2 MB、单 SSE 事件 1 MB。没有自动推理重试。HTTP 401/403/429 等转换为固定提示，不反射响应错误正文、底层 fetch 异常或请求头，避免 Key 泄露。
 
-## 第一阶段范围
+/models 不支持可手动输入，Model ID 允许暂空以获取列表。连接测试使用 stream=false、max_tokens=1，可能计费。接口可达与模型有权限不是同一结论，需实际测试。
 
-聊天和工作面板为独立原生窗口，关闭不影响托盘。聊天发送禁用、不显示登录按钮、不返回模型回复。工作面板明确为本地素材预览。未增加 OpenAI SDK、数据库、MCP SDK、语音或 Shell 执行代码。
+通用额度方法直接返回 unsupported，不请求猜测端点。DeepSeekProvider 显式选择后查询同 origin 根目录 /user/balance，校验真实货币/余额并带时间；其他服务可扩展 ChatProvider 和 createProvider 工厂。参考 [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[DeepSeek 余额](https://api-docs.deepseek.com/zh-cn/api/get-user-balance/)。
 
-`src/main/integrations/contracts.ts` 只定义主进程侧 `ChatProvider`、`AgentRuntime`、`PermissionManager` 与权限请求结构。`PetActivityEvent` 位于共享类型，承载经过适配后的可公开活动信息，不携带 OAuth 数据。
+## 凭据与端点
 
-## 下一阶段建议（2026-11-12 官方文档核对）
+配置写 ai-provider.json；safeStorage.encryptString 加密后的凭据写 ai-credentials.bin，密文中绑定规范化 Base URL。读取时端点必须一致，更换地址不沿用旧 Key，fetch 禁止重定向。只允许 HTTPS 或精确 loopback HTTP，拒绝 URL 内账号密码、查询、片段；Key 校验长度和控制字符。
 
-1. 根据应用分发形式完成 SIWC 注册与支持的登录流程。身份登录与获准使用 ChatGPT 计划额度分别处理；是否可用、范围、限额以申请及官方指南为准。系统浏览器中的官方认证由用户完成；令牌由主进程管理，以 Windows 凭据保护机制保存，绝不放入 localStorage、Renderer、日志或 `pet-settings.json`。参见 [Sign in with ChatGPT](https://developers.openai.com/siwc)。
-2. 固定 Codex 版本，依据该版本生成协议类型，在主进程实现 `AgentRuntime` 子进程适配器，优先使用 `codex app-server --listen stdio://` 的 JSONL 双向通道，发送 initialize / initialized，再处理 thread、turn、流式通知、取消、退出和断线。参见 [Codex App Server](https://learn.chatgpt.com/docs/app-server)。
-3. SIWC 与 App Server 的令牌交接、provider 配置和续期应按当前官方集成指南实施，不能假设读取现有 ChatGPT 客户端凭据即可授权。参见 [SIWC + Codex app-server](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server)。
-4. 将聊天流式开始/回复映射为 thinking；执行工具映射 working；审批请求映射 question；成功完成映射 happy；失败回 idle 并在任务面板显示真实错误。统一调用 `handleActivityEvent`，在适配器层过滤过期 taskId，禁止旧任务完成事件覆盖新任务。当前类型已预留 taskId，MVP 尚不执行任务。
-5. 实现 PermissionManager，按任务 ID、工具和明确作用范围记录批准/拒绝；收到审批后暂停实际执行，用户批准后才继续。再接入 MCP，所有工具仍通过主进程权限门，不给 Renderer 通用 invoke 或 Shell。
-6. 在主进程加入 SQLite 仓储，用于显式保存的会话和长期记忆，定义迁移、删除、保留策略。位置等少量偏好可继续使用 JSON。UI 只接受裁剪后的会话视图。
+系统加密不可用或 Linux basic_text 后端时禁止保存/解密，绝不明文后备。当前固定 Electron 45.3.1，使用其支持的同步 safeStorage；升级 46 前须迁移异步接口，见 [45.3.1 文档](https://github.com/electron/electron/blob/v45.3.1/docs/api/safe-storage.md)。
 
-本阶段没有真实身份、推理或 App Server 请求；以上为下一阶段实现边界。
+用户输入仅短暂存在密码框，单向交给主进程，保存尝试后清空；任何读接口、快照、localStorage、宠物设置、聊天文件和日志不返回原始 Key。清除删除凭据文件。两个文件独立原子替换，先凭据后配置；极端中途故障可能需要重新输入，端点绑定会阻止向错误地址发送 Key。
+
+## 会话与请求
+
+ChatService 是唯一请求协调器；全应用最多一个活动生成或诊断请求。先原子保存用户消息和 streaming 占位，再发请求。可以切换会话查看，但回复始终写入原 sessionId。配置更改需等请求停止/结束。
+
+每个请求持有 requestId/messageId/sessionId/AbortController。取消先令 active 失效，标记 cancelled、保存并通知 idle，再 abort；所有 chunk、完成、错误比较 active 对象。旧请求即使不响应 abort，也不能改新消息、新 active 或动画；旧 finally 仅保存当前库。
+
+ConversationStore 存版本、selectedId、会话标题/时间和消息状态/模型/Provider/实际 usage，读取重构白名单。创建/切换/重命名/删除/发送原子保存，流式输出最多 500ms 检查点、40ms UI 通知合并，终止立即保存。异常退出后 streaming 变 interrupted，不自动重试。存储失败有提示并保留内存；强退可能丢失最近检查点后的片段。上限见 README。
+
+上下文只取当前会话用户消息与完整助手回复；部分助手输出仅供查看。删除活动会话先取消。Token 只累计实际 usage，未报告次数单列，余额独立展示，不把估计值当作实际账单。
+
+## 动画与窗口
+
+ChatService 经既有 handleActivityEvent({source:'chat',taskId,activity}) 驱动 PetStateManager：开始 thinking，首段 responding，成功 success/happy 一轮，失败/取消 idle。过期保护统一在 ChatService。拖动优先覆盖聊天，松开恢复进行中聊天，普通拖动回 idle，没有第二套状态机。
+
+原有透明无边框、默认置顶、跳过任务栏、240 DIP 可调、多屏/负坐标/分数 DPI 修正不变。Windows pop-up-menu 层级保证 topmost；16ms 主进程采样，窗口内锚点校验与末尾补采样、失焦/隐藏/退出结束及超时兜底继续复用。全部 PNG 和统一 AnimationManager 复用，未改原始素材。
+
+## 后续边界
+
+本阶段仅用户配置的 OpenAI-Compatible 聊天。ChatGPT 登录、SIWC/OAuth、Codex App Server、Agent 自主执行、Shell/文件/Git 工具、MCP、浏览器自动化、SQLite 长期记忆、长期偏好、提醒和后台任务均未实施，也不会由模型回复触发。

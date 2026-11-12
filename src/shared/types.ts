@@ -1,3 +1,4 @@
+import type { ChatSnapshot, ProviderInput, ProviderState } from './chat';
 export const ANIMATIONS = ['idle', 'thinking', 'angry', 'working', 'question', 'dragged', 'sleeping', 'happy'] as const;
 export type AnimationName = typeof ANIMATIONS[number];
 export const ACTIVITIES = ['idle', 'thinking', 'responding', 'working', 'waitingApproval', 'success'] as const;
@@ -45,4 +46,20 @@ export interface DesktopPetAPI {
   updateSettings(patch: SettingsPatch): Promise<void>;
   previewAnimation(animation: AnimationName): Promise<void>;
   stopPreview(): Promise<void>;
+  getProviderState(): Promise<ProviderState>;
+  onProviderState(callback: (state: ProviderState) => void): () => void;
+  saveProvider(input: ProviderInput): Promise<void>;
+  clearApiKey(): Promise<void>;
+  listModels(): Promise<string[]>;
+  selectModel(model: string): Promise<void>;
+  testConnection(): Promise<void>;
+  refreshBalance(): Promise<void>;
+  getChatSnapshot(): Promise<ChatSnapshot>;
+  onChatSnapshot(callback: (state: ChatSnapshot) => void): () => void;
+  createConversation(): Promise<void>;
+  selectConversation(id: string): Promise<void>;
+  renameConversation(input: { id: string; title: string }): Promise<void>;
+  deleteConversation(id: string): Promise<void>;
+  sendChat(input: { sessionId: string; text: string }): Promise<void>;
+  cancelChat(requestId: string): Promise<void>;
 }

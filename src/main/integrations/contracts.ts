@@ -1,10 +1,14 @@
 import type { PetActivityEvent } from '../../shared/types';
+import type { BalanceState, TokenUsage } from '../../shared/chat';
 
 // 以下接口仅属于主进程；认证令牌、文件系统和工具能力不进入 Renderer。
 export interface ChatMessage { role: 'user' | 'assistant'; text: string }
+export type ChatChunk = { type: 'text'; text: string } | { type: 'usage'; usage: TokenUsage } | { type: 'done'; finishReason: string | null };
 export interface ChatProvider {
-  readonly connected: boolean;
-  send(message: string, signal: AbortSignal): AsyncIterable<{ type: 'text'; text: string } | PetActivityEvent>;
+  send(messages: readonly ChatMessage[], signal: AbortSignal): AsyncIterable<ChatChunk>;
+  listModels(signal: AbortSignal): Promise<string[]>;
+  testConnection(signal: AbortSignal): Promise<void>;
+  getBalance(signal: AbortSignal): Promise<BalanceState>;
 }
 export interface AgentRuntime {
   startTask(prompt: string, signal: AbortSignal): AsyncIterable<PetActivityEvent>;
@@ -21,4 +25,4 @@ export interface PermissionManager {
   request(request: PermissionRequest, signal: AbortSignal): Promise<'approved' | 'denied'>;
   revokeTask(taskId: string): void;
 }
-// MVP 没有 Provider/Runtime 实现，不发送请求、不启动 Shell，也不制造模型回复。
+// AgentRuntime / PermissionManager 仅保留接口，第二阶段不执行工具。

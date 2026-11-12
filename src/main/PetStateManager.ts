@@ -77,8 +77,12 @@ export class PetStateManager {
     this.dragging = dragging;
     this.preview = null;
     this.emotion = null;
-    // 按 MVP 交互约定，松开拖动回到 idle；后续真实任务事件可再次驱动状态。
-    if (!dragging) { this.activity = 'idle'; this.sourceActivities.clear(); }
+    if (!dragging) {
+      const chat = this.sourceActivities.get('chat');
+      // 拖动仅临时覆盖进行中的聊天动画；普通拖动仍恢复 idle。
+      if (chat === 'thinking' || chat === 'responding') this.activity = chat;
+      else { this.activity = 'idle'; this.sourceActivities.clear(); }
+    }
     this.notify();
   }
   interact(emotion: Emotion): void {

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, net, protocol, screen, session, Tray } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, net, protocol, safeStorage, screen, session, Tray } from 'electron';
 import type { IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron';
 import { join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -8,6 +8,10 @@ import type { AnimationName, AppSnapshot, Emotion, Panel, SettingsPatch } from '
 import { ConfigStore, isRecord, validatePatch } from './config';
 import { fitToDisplays } from './geometry';
 import { PetStateManager } from './PetStateManager';
+import { CredentialStore } from './chat/CredentialStore';
+import { ChatService } from './chat/ChatService';
+import { boundedText } from './chat/validation';
+import { validateId } from './chat/ConversationStore';
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'emma', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 const PAGE = 'emma://app/index.html';
@@ -37,10 +41,19 @@ export async function startApp() {
   session.defaultSession.setPermissionCheckHandler(() => false);
   const store = new ConfigStore(join(app.getPath('userData'), 'pet-settings.json'));
   const state = new PetStateManager(store.value.sleepAfterMs);
+  const chat = new ChatService(app.getPath('userData'), new CredentialStore(join(app.getPath('userData'), 'ai-credentials.bin'), safeStorage), event => state.handleActivityEvent(event));
   state.setPaused(!store.value.animationEnabled);
   let quitting = false;
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   const panels = new Map<Panel, BrowserWindow>();
+  chat.subscribe(() => {
+    // 聊天内容只发送给聊天面板；设置面板只接收非敏感服务状态，桌宠不接收聊天数据。
+    for (const [role, window] of panels) {
+      if (window.isDestroyed() || window.webContents.isDestroyed()) continue;
+      if (role === 'chat') window.webContents.send(IPC.chatChanged, chat.snapshot());
+      if (role === 'chat' || role === 'settings') window.webContents.send(IPC.providerChanged, chat.providerSnapshot());
+    }
+  });
   const areas = () => screen.getAllDisplays().map(display => display.workArea);
   const initialBounds = fitToDisplays(store.value.position, store.value.size, areas());
   const pet = new BrowserWindow({
@@ -223,6 +236,30 @@ export async function startApp() {
     state.previewAnimation(animation);
   });
   handle(IPC.stopPreview, ['work'], () => state.stopPreview());
+  function object(value: unknown, keys: string[]): Record<string, unknown> {
+    if (!isRecord(value) || Object.keys(value).length !== keys.length || Object.keys(value).some(key => !keys.includes(key))) throw new Error('无效参数');
+    return value;
+  }
+  handle(IPC.provider, ['chat', 'settings'], () => chat.providerSnapshot());
+  handle(IPC.providerSave, ['settings'], (_event, value) => chat.saveProvider(value));
+  handle(IPC.keyClear, ['settings'], () => chat.clearKey());
+  handle(IPC.models, ['chat', 'settings'], () => chat.inspect('models'));
+  handle(IPC.modelSelect, ['chat', 'settings'], (_event, value) => chat.selectModel(boundedText(value, 200, 'Model ID')));
+  handle(IPC.test, ['settings'], () => chat.inspect('test'));
+  handle(IPC.balance, ['chat', 'settings'], () => chat.inspect('balance'));
+  handle(IPC.chat, ['chat'], () => chat.snapshot());
+  handle(IPC.chatCreate, ['chat'], () => chat.create());
+  handle(IPC.chatSelect, ['chat'], (_event, value) => chat.select(validateId(value)));
+  handle(IPC.chatDelete, ['chat'], (_event, value) => chat.delete(validateId(value)));
+  handle(IPC.chatRename, ['chat'], (_event, value) => {
+    const input = object(value, ['id', 'title']); chat.rename(validateId(input.id), boundedText(input.title, 80, '会话名称'));
+  });
+  handle(IPC.chatSend, ['chat'], (_event, value) => {
+    const input = object(value, ['sessionId', 'text']);
+    boundedText(input.text, 32_000, '消息');
+    chat.send(validateId(input.sessionId), input.text as string); // 校验非空，但保留代码缩进和原始空白。
+  });
+  handle(IPC.chatCancel, ['chat'], (_event, value) => chat.cancel(validateId(value)));
 
   secureWindow(pet);
   pet.on('move', recordPosition);
@@ -239,7 +276,7 @@ export async function startApp() {
   screen.on('display-metrics-changed', correctBounds);
   app.on('before-quit', () => {
     quitting = true;
-    endDrag(); recordPosition(); save(); state.dispose(); tray.destroy();
+    endDrag(); recordPosition(); save(); chat.dispose(); state.dispose(); tray.destroy();
   });
   updateTray();
   await pet.loadURL(PAGE);

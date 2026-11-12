@@ -49,7 +49,7 @@ test('状态优先级、拖动唤醒、松开回 idle、过期完成事件不影
     state.setDragging(true);
     assert.equal(state.snapshot().animation, 'dragged');
     state.setDragging(false);
-    assert.equal(state.snapshot().animation, 'idle');
+    assert.equal(state.snapshot().animation, 'thinking', '松开后恢复仍在进行的聊天');
     state.setPetActivity('success');
     const old = state.snapshot().revision;
     state.setPetActivity('working');

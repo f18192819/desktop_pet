@@ -1,6 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/channels';
 import type { AppSnapshot, DesktopPetAPI } from '../shared/types';
+import type { ChatSnapshot, ProviderState } from '../shared/chat';
+
+function subscribe<T>(channel: string, callback: (value: T) => void): () => void {
+  const listener = (_event: Electron.IpcRendererEvent, value: T) => callback(value);
+  ipcRenderer.on(channel, listener);
+  return () => ipcRenderer.removeListener(channel, listener);
+}
 
 const api: DesktopPetAPI = {
   getSnapshot: () => ipcRenderer.invoke(IPC.snapshot),
@@ -20,5 +27,21 @@ const api: DesktopPetAPI = {
   updateSettings: patch => ipcRenderer.invoke(IPC.settings, patch),
   previewAnimation: animation => ipcRenderer.invoke(IPC.preview, animation),
   stopPreview: () => ipcRenderer.invoke(IPC.stopPreview),
+  getProviderState: () => ipcRenderer.invoke(IPC.provider),
+  onProviderState: callback => subscribe<ProviderState>(IPC.providerChanged, callback),
+  saveProvider: input => ipcRenderer.invoke(IPC.providerSave, input),
+  clearApiKey: () => ipcRenderer.invoke(IPC.keyClear),
+  listModels: () => ipcRenderer.invoke(IPC.models),
+  selectModel: model => ipcRenderer.invoke(IPC.modelSelect, model),
+  testConnection: () => ipcRenderer.invoke(IPC.test),
+  refreshBalance: () => ipcRenderer.invoke(IPC.balance),
+  getChatSnapshot: () => ipcRenderer.invoke(IPC.chat),
+  onChatSnapshot: callback => subscribe<ChatSnapshot>(IPC.chatChanged, callback),
+  createConversation: () => ipcRenderer.invoke(IPC.chatCreate),
+  selectConversation: id => ipcRenderer.invoke(IPC.chatSelect, id),
+  renameConversation: input => ipcRenderer.invoke(IPC.chatRename, input),
+  deleteConversation: id => ipcRenderer.invoke(IPC.chatDelete, id),
+  sendChat: input => ipcRenderer.invoke(IPC.chatSend, input),
+  cancelChat: requestId => ipcRenderer.invoke(IPC.chatCancel, requestId),
 };
 contextBridge.exposeInMainWorld('desktopPet', Object.freeze(api));

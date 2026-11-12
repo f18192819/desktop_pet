@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { ANIMATIONS } from '../shared/types';
 import type { AnimationName, PetSettings, SettingsPatch } from '../shared/types';
 import { useSnapshot } from './useSnapshot';
+import { AISettings } from './AISettings';
+import { Chat } from './Chat';
 
 const names: Record<AnimationName, string> = {
   idle: '待机', thinking: '思考', angry: '生气', working: '工作',
@@ -44,27 +46,18 @@ function Work({ current }: { current: AnimationName }) {
     {error && <p role="alert">{error}</p>}
   </>;
 }
-function Chat() {
-  const [draft, setDraft] = useState('');
-  return <div className="chat-content">
-    <div className="chat-empty"><img src="./characters/emma/frames/01_idle/frame_00.png" alt="艾玛" /><h2>艾玛在这里</h2><p>聊天功能将在下一阶段接入。<br />现在可以陪伴、互动，也可以在工作面板预览动作。</p><span className="pill">尚未连接 AI 服务</span></div>
-    <label className="draft-label" htmlFor="chat-draft">消息草稿</label>
-    <textarea id="chat-draft" value={draft} onChange={event => setDraft(event.target.value)} placeholder="可以先写下想说的话…" rows={3} />
-    <div className="composer-footer"><small>草稿仅保留在当前面板，关闭后清除。</small><button disabled>发送（尚未接入）</button></div>
-  </div>;
-}
 export function Panels({ panel }: { panel: 'chat' | 'work' | 'settings' }) {
   const { snapshot, error } = useSnapshot();
   const title = panel === 'chat' ? '和艾玛聊聊' : panel === 'work' ? '工作面板' : '陪伴设置';
   return <main className={`panel panel-${panel}`}>
-    <header><div className="brand"><span className="brand-mark">E</span><span>EMMA<small>DESKTOP COMPANION</small></span></div><span className="version">MVP 0.1</span></header>
+    <header><div className="brand"><span className="brand-mark">E</span><span>EMMA<small>DESKTOP COMPANION</small></span></div><span className="version">0.2 · CHAT</span></header>
     <nav aria-label="面板导航">{(['chat', 'work', 'settings'] as const).map(target => <button key={target} aria-current={panel === target ? 'page' : undefined} onClick={() => void window.desktopPet.openPanel(target)}>{target === 'chat' ? '聊天' : target === 'work' ? '工作' : '设置'}</button>)}</nav>
     <div className="panel-heading"><h1>{title}</h1><span className="status-dot">{snapshot ? names[snapshot.pet.animation] : '连接中'}{snapshot?.pet.paused ? ' · 已暂停' : ''}</span></div>
     {snapshot?.notice && <p className="callout" role="alert">{snapshot.notice}</p>}
     {error && <p role="alert">{error}</p>}
     {panel === 'chat' && <Chat />}
     {panel === 'work' && snapshot && <Work current={snapshot.pet.animation} />}
-    {panel === 'settings' && snapshot && <Settings settings={snapshot.settings} />}
+    {panel === 'settings' && snapshot && <><Settings settings={snapshot.settings} /><AISettings /></>}
     <footer><span>艾玛 · 本地桌面陪伴</span><button onClick={() => void window.desktopPet.closePanel()}>关闭面板</button></footer>
   </main>;
 }

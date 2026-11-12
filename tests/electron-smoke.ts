@@ -46,6 +46,8 @@ async function run() {
   assert.equal(alpha.background, 'rgba(0, 0, 0, 0)');
   assert.equal(await pet.webContents.executeJavaScript("window.desktopPet.previewAnimation('working').then(() => false, () => true)"), true, '桌宠 Renderer 不应拥有预览权限');
   assert.equal(await pet.webContents.executeJavaScript("window.desktopPet.beginDrag({x:-10,y:0}).then(() => false, () => true)"), true, '抓取点必须位于本窗口内');
+  assert.equal(await pet.webContents.executeJavaScript('window.desktopPet.getProviderState().then(() => false, () => true)'), true, '桌宠无服务配置权限');
+  assert.equal(await pet.webContents.executeJavaScript('window.desktopPet.getChatSnapshot().then(() => false, () => true)'), true, '桌宠无聊天记录权限');
   async function panelWindow(panel: Panel): Promise<BrowserWindow> {
     openPanel(panel);
     await until(() => !!runtime.panels.get(panel)?.isVisible(), `${panel} 面板未显示`);
@@ -92,6 +94,11 @@ async function run() {
   runtime.setVisible(false); assert.equal(pet.isVisible(), false);
   runtime.setVisible(true); assert.equal(pet.isVisible(), true);
   const chat = await panelWindow('chat');
+  assert.equal(await settings.webContents.executeJavaScript('window.desktopPet.getChatSnapshot().then(() => false, () => true)'), true, '设置面板无聊天记录权限');
+  assert.equal(await settings.webContents.executeJavaScript(`window.desktopPet.saveProvider({name:'Mock',baseUrl:'http://remote.invalid',model:'mock',adapter:'openai-compatible',includeUsage:true,timeoutMs:1000}).then(() => false, () => true)`), true);
+  const provider = await settings.webContents.executeJavaScript('window.desktopPet.getProviderState()');
+  assert.equal('apiKey' in provider, false);
+  assert.equal('apiKey' in provider.config, false);
   assert.equal(await chat.webContents.executeJavaScript("document.querySelector('textarea') !== null && document.querySelector('.composer-footer button').disabled"), true);
   assert.ok(runtime.contextMenu().items.some(item => item.label === '隐藏桌宠'));
   await delay(300); // 等待已显示的聊天面板完成首帧合成，再保存视觉检查截图。
