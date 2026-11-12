@@ -1,0 +1,15 @@
+{
+  "character": "emma",
+  "frameWidth": 443,
+  "frameHeight": 443,
+  "animations": {
+    "idle": { "directory": "frames/01_idle", "framePattern": "frame_{index}.png", "frameCount": 8, "intervalMs": 150, "loop": true },
+    "thinking": { "directory": "frames/02_thinking", "framePattern": "frame_{index}.png", "frameCount": 8, "intervalMs": 190, "loop": true },
+    "angry": { "directory": "frames/03_angry", "framePattern": "frame_{index}.png", "frameCount": 8, "intervalMs": 130, "loop": false },
+    "working": { "directory": "frames/04_working", "framePattern": "frame_{index}.png", "frameCount": 8, "intervalMs": 110, "loop": true },
+    "question": { "directory": "frames/05_question", "framePattern": "frame_{index}.png", "frameCount": 8, "intervalMs": 180, "loop": true },
+    "dragged": { "directory": "frames/06_dragged", "framePattern": "frame_{index}.png", "frameCount": 8, "intervalMs": 120, "loop": true },
+    "sleeping": { "directory": "frames/07_sleeping", "framePattern": "frame_{index}.png", "frameCount": 8, "intervalMs": 320, "loop": true },
+    "happy": { "directory": "frames/08_happy", "framePattern": "frame_{index}.png", "frameCount": 8, "intervalMs": 150, "loop": false }
+  }
+}

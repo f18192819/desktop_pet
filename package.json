@@ -1,0 +1,34 @@
+{
+  "name": "emma-desktop-companion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Emma Windows desktop pet MVP",
+  "main": "dist/electron/main.cjs",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/build.mjs",
+    "start": "npm run build && node scripts/launch.mjs",
+    "dev": "npm start",
+    "start:built": "node scripts/launch.mjs",
+    "test": "node scripts/test.mjs",
+    "test:electron": "node scripts/smoke.mjs",
+    "package:win": "npm run typecheck && npm run build && node scripts/package.mjs"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "electron": "45.3.1",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3",
+    "vite": "8.3.8"
+  }
+}

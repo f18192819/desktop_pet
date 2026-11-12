@@ -1,0 +1,48 @@
+export const ANIMATIONS = ['idle', 'thinking', 'angry', 'working', 'question', 'dragged', 'sleeping', 'happy'] as const;
+export type AnimationName = typeof ANIMATIONS[number];
+export const ACTIVITIES = ['idle', 'thinking', 'responding', 'working', 'waitingApproval', 'success'] as const;
+export type PetActivity = typeof ACTIVITIES[number];
+export type Emotion = 'happy' | 'angry' | 'question';
+export type Panel = 'chat' | 'work' | 'settings';
+export interface PetSettings {
+  position: { x: number; y: number } | null;
+  size: number;
+  alwaysOnTop: boolean;
+  animationEnabled: boolean;
+  sleepAfterMs: number;
+  skin: 'emma';
+}
+export type SettingsPatch = Partial<Omit<PetSettings, 'position'>>;
+export interface PetSnapshot {
+  animation: AnimationName;
+  activity: PetActivity;
+  revision: number;
+  paused: boolean;
+  priority: number;
+}
+export interface AppSnapshot {
+  pet: PetSnapshot;
+  settings: PetSettings;
+  visible: boolean;
+  notice: string | null;
+}
+export interface PetActivityEvent {
+  activity: PetActivity;
+  source: 'chat' | 'agent';
+  taskId?: string;
+}
+export interface DesktopPetAPI {
+  getSnapshot(): Promise<AppSnapshot>;
+  onSnapshot(callback: (snapshot: AppSnapshot) => void): () => void;
+  beginDrag(anchor: { x: number; y: number }): Promise<void>;
+  endDrag(): Promise<{ dragged: boolean }>;
+  wake(): Promise<void>;
+  interact(emotion: Emotion): Promise<void>;
+  animationFinished(revision: number): Promise<void>;
+  openPanel(panel: Panel): Promise<void>;
+  closePanel(): Promise<void>;
+  showContextMenu(): Promise<void>;
+  updateSettings(patch: SettingsPatch): Promise<void>;
+  previewAnimation(animation: AnimationName): Promise<void>;
+  stopPreview(): Promise<void>;
+}
