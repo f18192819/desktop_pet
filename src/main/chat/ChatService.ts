@@ -9,6 +9,7 @@ import { ConversationStore } from './ConversationStore';
 import { atomicWrite, preserveBroken, readJSON } from './storage';
 import { validateProvider } from './validation';
 import { createProvider, ProviderError, safeError } from './OpenAICompatibleProvider';
+import { AgentProvider } from '../agent/AgentProvider';
 
 const defaults: ProviderConfig = { name: 'OpenAI-Compatible', baseUrl: 'https://api.openai.com/v1', model: '', adapter: 'openai-compatible', includeUsage: true, timeoutMs: 120_000 };
 interface Active { requestId: string; sessionId: string; messageId: string; controller: AbortController }
@@ -49,6 +50,10 @@ export class ChatService {
     return structuredClone({ sessions: sessions.map(({ messages: _, ...s }) => s), selectedId, messages, active: this.active ? { requestId: this.active.requestId, sessionId: this.active.sessionId } : null, usage, unreportedReplies, notice: this.conversations.notice });
   }
   private requireIdle(): void { if (this.active || this.operation) throw new Error('请求进行中，请先停止或等待完成'); }
+  createAgentProvider(): AgentProvider {
+    if (!this.config.model) throw new Error('请先配置 Model ID');
+    return new AgentProvider({ ...this.config }, this.credentials.get(this.config.baseUrl));
+  }
   saveProvider(input: unknown): void {
     this.requireIdle();
     const { apiKey, ...config } = validateProvider(input);

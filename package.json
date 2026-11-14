@@ -1,6 +1,6 @@
 {
   "name": "emma-desktop-companion",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Emma Windows desktop pet MVP",
@@ -19,6 +19,7 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
+    "ajv": "8.20.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },

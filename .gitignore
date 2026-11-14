@@ -11,3 +11,6 @@ artifacts/
 ai-provider.json
 ai-credentials.bin
 conversations.json
+
+workspace.json
+agent-sessions.json

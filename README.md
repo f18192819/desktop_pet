@@ -1,4 +1,6 @@
-# 艾玛 Desktop Companion · 0.2
+# 艾玛 Desktop Companion · 0.3
+
+第三阶段新增本地文件 Agent。设置中选择工作区，在工作面板输入任务；默认写入逐次审批，删除始终审批，沿用已有 API 配置。**Shell 安全探测失败，Shell/Git/构建/代码执行保持禁用，完整安全验收未通过。** 详见 [第三阶段交付、文件边界与限制](docs/STAGE3.md)。外部读取内容可能发送给模型服务商；请阅读该文档的文件竞态限制。
 
 Windows Electron + React + TypeScript 桌宠，第二阶段增加 OpenAI-Compatible 实时聊天。用户自行配置 API Key、Base URL、Model ID，保留原有八种动画、窗口、拖动、多屏、托盘和偏好设置。没有新增 SDK 或数据库依赖。
 
@@ -48,7 +50,7 @@ npm test
 
 双击桌宠打开聊天，创建、选择、重命名或删除会话（删除需二次点击）。历史与当前会话重启后恢复。用户消息在请求前保存，回复逐块显示；支持停止、Ctrl+Enter 发送和向上翻阅历史。消息以纯文本显示，不执行 HTML 或加载远程图片。
 
-全应用同时最多一个生成请求，可切换到其他会话查看；停止按钮仍作用于原请求。删除生成中的会话会先取消。失败、取消或退出保留已收到的部分内容；上次 streaming 的消息重启显示 interrupted，不自动重发。草稿仅在聊天窗口内存中，关闭面板后清除。
+普通聊天同时最多一个生成请求，Agent 使用独立协调器。可切换到其他会话查看；停止按钮仍作用于原请求。删除生成中的会话会先取消。失败、取消或退出保留已收到的部分内容；上次 streaming 的消息重启显示 interrupted，不自动重发。草稿仅在聊天窗口内存中，关闭面板后清除。
 
 上下文按会话隔离。后续请求使用该会话用户消息和完整助手回复，错误/取消/中断的部分助手回复仅供查看。切换服务/模型不自动发送历史，只有再次发送时才将当前会话上下文发往所选服务。
 
@@ -63,7 +65,7 @@ Token 仅展示服务商返回的输入/输出/总量，按当前会话累计；
 
 单击开心互动，双击聊天；左键移动超过 5 DIP 拖动并播放 dragged，普通拖动松开 idle，进行中的聊天则恢复聊天动画。单击延迟 450ms 识别双击，拖动不误触点击。右键提供聊天、工作预览、暂停/恢复、设置、隐藏、退出；托盘可显示/隐藏、打开面板和退出，双击显示桌宠。
 
-默认空闲五分钟睡眠，点击/拖动唤醒；可设置大小 120–600、置顶、动画开关、睡眠和皮肤。工作面板仍仅用于八种动画预览。原包 `Emma_Desktop_Pet_Animation_Pack/` 保留，运行素材在 `assets/characters/emma/`，64 张 443×443 RGBA PNG 预加载后按 manifest 播放。没有修改原图、重新生成动画或使用 GIF 播放。
+默认空闲五分钟睡眠，点击/拖动唤醒；可设置大小 120–600、置顶、动画开关、睡眠和皮肤。工作面板新增 Agent，保留八种动画预览。原包 `Emma_Desktop_Pet_Animation_Pack/` 保留，运行素材在 `assets/characters/emma/`，64 张 443×443 RGBA PNG 预加载后按 manifest 播放。没有修改原图、重新生成动画或使用 GIF 播放。
 
 ## 本地数据与安全
 
@@ -74,6 +76,8 @@ Electron userData 通常是 `%APPDATA%/Emma Desktop Companion/`：
 | pet-settings.json | 原有桌宠偏好及位置 |
 | ai-provider.json | 非敏感服务配置，无 Key |
 | ai-credentials.bin | safeStorage 加密后的端点绑定凭据 |
+| workspace.json | 原生选择器授权的工作区及写入审批选项 |
+| agent-sessions.json | Agent 任务、工具结果、计划、审批及修改记录 |
 | conversations.json | 版本化会话、消息、状态、模型、实际 usage，无凭据 |
 
 同目录临时文件替换原子写入。用户消息请求前保存，流式输出最多每 500ms 保存，终止/退出立即保存；强制结束进程可能丢失最近一个间隔的片段。损坏 JSON 保留 `.broken-时间戳`；保存失败提示并保留内存内容。聊天记录本身是本地明文，凭据独立加密。
@@ -92,4 +96,4 @@ API 请求只在主进程发起。Renderer 保留 `connect-src 'none'`、context
 
 ## 后续范围
 
-当前不接入 ChatGPT 登录、SIWC、OAuth。Codex App Server、Agent 工具执行、Shell/Git、MCP、浏览器自动化、SQLite 长期记忆、长期偏好、提醒和后台任务均留待后续。AgentRuntime / PermissionManager 仅保留接口。walking、talking、error、waiting 如需独立表现仍需补素材，失败恢复 idle，不播放 angry。
+当前不接入 ChatGPT 登录、SIWC、OAuth。Codex App Server、MCP、浏览器自动化、SQLite 长期记忆、长期偏好、提醒和后台任务留待后续。AgentRuntime / PermissionManager 已实现文件工具循环和审批；Shell/Git 因安全探测失败而禁用。walking、talking、error、waiting 如需独立表现仍需补素材，失败恢复 idle，不播放 angry。

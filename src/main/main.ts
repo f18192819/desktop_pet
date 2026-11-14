@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, net, protocol, safeStorage, screen, session, Tray } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, protocol, safeStorage, screen, session, Tray } from 'electron';
+import { AgentService } from './agent/AgentService';
 import type { IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron';
 import { join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -42,10 +43,12 @@ export async function startApp() {
   const store = new ConfigStore(join(app.getPath('userData'), 'pet-settings.json'));
   const state = new PetStateManager(store.value.sleepAfterMs);
   const chat = new ChatService(app.getPath('userData'), new CredentialStore(join(app.getPath('userData'), 'ai-credentials.bin'), safeStorage), event => state.handleActivityEvent(event));
+  const agent = new AgentService(app.getPath('userData'), () => chat.createAgentProvider(), event => state.handleActivityEvent(event));
   state.setPaused(!store.value.animationEnabled);
   let quitting = false;
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   const panels = new Map<Panel, BrowserWindow>();
+  agent.subscribe(() => { const window = panels.get('work'); if (window && !window.isDestroyed()) window.webContents.send(IPC.agentChanged, agent.snapshot()); });
   chat.subscribe(() => {
     // 聊天内容只发送给聊天面板；设置面板只接收非敏感服务状态，桌宠不接收聊天数据。
     for (const [role, window] of panels) {
@@ -215,6 +218,18 @@ export async function startApp() {
     });
   }
   handle(IPC.snapshot, all, () => snapshot());
+  handle(IPC.workspace, ['settings', 'work'], () => agent.workspaceState());
+  handle(IPC.workspaceChoose, ['settings'], async event => {
+    agent.assertIdle(); const parent = BrowserWindow.fromWebContents(event.sender); if (!parent) throw new Error('窗口不存在');
+    const result = await dialog.showOpenDialog(parent, { title: '选择 Agent 工作区', properties: ['openDirectory'] });
+    if (!result.canceled && result.filePaths[0]) agent.setWorkspace(result.filePaths[0]);
+  });
+  handle(IPC.autoWrite, ['settings'], (_event, value) => { if (typeof value !== 'boolean') throw new Error('无效开关'); agent.setAutoWrite(value); });
+  handle(IPC.agent, ['work'], () => agent.snapshot());
+  handle(IPC.agentStart, ['work'], (_event, value) => agent.start(boundedText(value, 32000, '任务指令')));
+  handle(IPC.agentResume, ['work'], (_event, value) => agent.resume(validateId(value)));
+  handle(IPC.agentCancel, ['work'], (_event, value) => agent.cancel(validateId(value)));
+  handle(IPC.agentApproval, ['work'], (_event, value) => { const input = object(value, ['id', 'approved']); if (typeof input.approved !== 'boolean') throw new Error('无效审批'); agent.permissions.decide(validateId(input.id), input.approved); });
   handle(IPC.beginDrag, ['pet'], (_event, anchor) => beginDrag(anchor));
   handle(IPC.endDrag, ['pet'], () => endDrag());
   handle(IPC.wake, all, () => state.wake());
@@ -276,7 +291,7 @@ export async function startApp() {
   screen.on('display-metrics-changed', correctBounds);
   app.on('before-quit', () => {
     quitting = true;
-    endDrag(); recordPosition(); save(); chat.dispose(); state.dispose(); tray.destroy();
+    endDrag(); recordPosition(); save(); agent.dispose(); chat.dispose(); state.dispose(); tray.destroy();
   });
   updateTray();
   await pet.loadURL(PAGE);

@@ -1,4 +1,4 @@
-import type { PetActivityEvent } from '../../shared/types';
+import type { AgentSnapshot } from '../../shared/agent';
 import type { BalanceState, TokenUsage } from '../../shared/chat';
 
 // 以下接口仅属于主进程；认证令牌、文件系统和工具能力不进入 Renderer。
@@ -11,8 +11,10 @@ export interface ChatProvider {
   getBalance(signal: AbortSignal): Promise<BalanceState>;
 }
 export interface AgentRuntime {
-  startTask(prompt: string, signal: AbortSignal): AsyncIterable<PetActivityEvent>;
-  cancelTask(taskId: string): Promise<void>;
+  start(prompt: string): string;
+  resume(taskId: string): void;
+  cancel(taskId: string): void;
+  snapshot(): AgentSnapshot;
 }
 export interface PermissionRequest {
   id: string;
@@ -25,4 +27,4 @@ export interface PermissionManager {
   request(request: PermissionRequest, signal: AbortSignal): Promise<'approved' | 'denied'>;
   revokeTask(taskId: string): void;
 }
-// AgentRuntime / PermissionManager 仅保留接口，第二阶段不执行工具。
+// AgentRuntime / PermissionManager 由 agent 模块实现。

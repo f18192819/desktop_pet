@@ -28,3 +28,8 @@
 自动检查：`npm run typecheck`、`npm run build`、`npm test`、`npm run test:electron`。Electron 冒烟测试使用独立 profile，并真实启动两次验证恢复；不修改实际用户配置。
 
 第二阶段的服务配置、加密凭据、流式聊天、多会话、异常/取消和用量验收见 [STAGE2.md](STAGE2.md)。真实连接测试可能计费，核心自动测试使用模拟网络。
+
+
+## 第三阶段
+
+参考 [STAGE3](STAGE3.md) 的逐项验收与限制。新增文件 Agent、一次性审批、任务持久化和手动继续；保留普通聊天与动画验收。Shell 原生安全探测失败（外部删除、loopback），必须显示禁用，不能宣称 Shell/Git/构建功能通过。预置链接测试通过不代表原生并发竞态防护已完成。

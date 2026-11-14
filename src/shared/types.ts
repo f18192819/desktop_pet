@@ -1,4 +1,5 @@
 import type { ChatSnapshot, ProviderInput, ProviderState } from './chat';
+import type { AgentSnapshot, WorkspaceState } from './agent';
 export const ANIMATIONS = ['idle', 'thinking', 'angry', 'working', 'question', 'dragged', 'sleeping', 'happy'] as const;
 export type AnimationName = typeof ANIMATIONS[number];
 export const ACTIVITIES = ['idle', 'thinking', 'responding', 'working', 'waitingApproval', 'success'] as const;
@@ -33,6 +34,15 @@ export interface PetActivityEvent {
   taskId?: string;
 }
 export interface DesktopPetAPI {
+  getWorkspace(): Promise<WorkspaceState>;
+  chooseWorkspace(): Promise<void>;
+  setAutoWrite(value: boolean): Promise<void>;
+  getAgentSnapshot(): Promise<AgentSnapshot>;
+  onAgentSnapshot(callback: (state: AgentSnapshot) => void): () => void;
+  startAgent(prompt: string): Promise<string>;
+  resumeAgent(id: string): Promise<void>;
+  cancelAgent(id: string): Promise<void>;
+  decideApproval(input: { id: string; approved: boolean }): Promise<void>;
   getSnapshot(): Promise<AppSnapshot>;
   onSnapshot(callback: (snapshot: AppSnapshot) => void): () => void;
   beginDrag(anchor: { x: number; y: number }): Promise<void>;

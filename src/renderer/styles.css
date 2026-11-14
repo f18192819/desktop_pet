@@ -87,3 +87,6 @@ footer button { border: 0; background: transparent; color: #9d7b8b; font-size: 1
 .panel-chat .usage-summary, .panel-chat .balance { margin-bottom: 6px; }
 .panel-chat .message-list .chat-empty { padding: 0; }
 .panel-chat .message-list .chat-empty img { width: 60px; height: 60px; margin-bottom: 4px; }
+.agent-work { display: grid; gap: 10px; margin-bottom: 24px; }
+.agent-work pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; background: #f0ede7; padding: 10px; font-size: 12px; }
+.agent-work details { border: 1px solid #dfd9ce; border-radius: 6px; padding: 8px; }

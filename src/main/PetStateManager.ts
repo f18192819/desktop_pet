@@ -78,10 +78,7 @@ export class PetStateManager {
     this.preview = null;
     this.emotion = null;
     if (!dragging) {
-      const chat = this.sourceActivities.get('chat');
-      // 拖动仅临时覆盖进行中的聊天动画；普通拖动仍恢复 idle。
-      if (chat === 'thinking' || chat === 'responding') this.activity = chat;
-      else { this.activity = 'idle'; this.sourceActivities.clear(); }
+      this.activity = [...this.sourceActivities.values()].reduce<PetActivity>((best, value) => priorities[value] > priorities[best] ? value : best, 'idle');
     }
     this.notify();
   }
@@ -105,7 +102,7 @@ export class PetStateManager {
   setPaused(paused: boolean): void { this.paused = paused; this.notify(); }
   setSleepAfter(ms: number): void { this.sleepAfterMs = ms; this.armSleep(); }
   previewAnimation(animation: AnimationName): void { this.wake(); this.preview = animation; this.notify(true); }
-  stopPreview(): void { this.preview = null; this.setPetActivity('idle'); }
+  stopPreview(): void { this.preview = null; this.notify(); }
   private armSleep(): void {
     clearTimeout(this.sleepTimer);
     if (this.sleepAfterMs === 0) return;

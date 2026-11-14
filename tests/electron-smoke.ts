@@ -56,6 +56,9 @@ async function run() {
     return window;
   }
   const work = await panelWindow('work');
+  assert.equal(await pet.webContents.executeJavaScript('window.desktopPet.getAgentSnapshot().then(() => false, () => true)'), true);
+  assert.equal(await work.webContents.executeJavaScript('window.desktopPet.chooseWorkspace().then(() => false, () => true)'), true);
+  assert.equal(await work.webContents.executeJavaScript('window.desktopPet.getWorkspace().then(s => s.shell.enabled)'), false);
   const hashes: string[] = [];
   for (const animation of ANIMATIONS) {
     await work.webContents.executeJavaScript(`window.desktopPet.previewAnimation(${JSON.stringify(animation)})`);
@@ -72,6 +75,7 @@ async function run() {
   await work.webContents.executeJavaScript("window.desktopPet.previewAnimation('working')");
   await delay(180);
   const settings = await panelWindow('settings');
+  assert.equal(await settings.webContents.executeJavaScript('window.desktopPet.getAgentSnapshot().then(() => false, () => true)'), true);
   assert.equal(await settings.webContents.executeJavaScript("window.desktopPet.updateSettings({ size: -1 }).then(() => false, () => true)"), true);
   assert.equal(await settings.webContents.executeJavaScript("window.desktopPet.updateSettings({ shell: 'cmd' }).then(() => false, () => true)"), true);
   await settings.webContents.executeJavaScript('window.desktopPet.updateSettings({ animationEnabled: false })');
@@ -99,7 +103,8 @@ async function run() {
   const provider = await settings.webContents.executeJavaScript('window.desktopPet.getProviderState()');
   assert.equal('apiKey' in provider, false);
   assert.equal('apiKey' in provider.config, false);
-  assert.equal(await chat.webContents.executeJavaScript("document.querySelector('textarea') !== null && document.querySelector('.composer-footer button').disabled"), true);
+  await until(() => chat.webContents.executeJavaScript("document.querySelector('textarea') !== null && !!document.querySelector('.composer-footer button')"), '聊天数据加载未完成');
+  assert.equal(await chat.webContents.executeJavaScript("document.querySelector('.composer-footer button').disabled"), true);
   assert.ok(runtime.contextMenu().items.some(item => item.label === '隐藏桌宠'));
   await delay(300); // 等待已显示的聊天面板完成首帧合成，再保存视觉检查截图。
   mkdirSync('artifacts', { recursive: true });

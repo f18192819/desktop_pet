@@ -1,4 +1,4 @@
-# 架构 · 第二阶段
+# 架构 · 第三阶段
 
 沿用 Electron 主进程 / 沙箱 Preload / React Renderer，新增聊天模块，不迁移框架，不增加 SDK 或数据库依赖。
 
@@ -12,7 +12,7 @@
 
 ## Provider
 
-integrations/contracts.ts 的 ChatProvider 接受完整 messages 与 AbortSignal，返回 text / usage / done，另提供 listModels、testConnection、getBalance。AgentRuntime、PermissionManager 仅保留旧接口，未实现执行能力。
+integrations/contracts.ts 的 ChatProvider 接受完整 messages 与 AbortSignal，返回 text / usage / done，另提供 listModels、testConnection、getBalance。AgentRuntime、PermissionManager 在 agent 模块实现，独立于普通聊天。
 
 OpenAICompatibleProvider 使用原生 fetch，向 `{baseUrl}/chat/completions` POST model/messages/stream。TextDecoder 流式解码 UTF-8；SSEParser 支持跨块 CR/LF/CRLF、多行 data、注释和尾块。处理 delta.content/refusal、finish_reason、usage、[DONE]；有 finish_reason 的 EOF 兼容完成，无结束信号视为截断。错误 JSON、流中 error、异常结构和工具调用报错，不执行工具。
 
@@ -32,7 +32,7 @@ OpenAICompatibleProvider 使用原生 fetch，向 `{baseUrl}/chat/completions` P
 
 ## 会话与请求
 
-ChatService 是唯一请求协调器；全应用最多一个活动生成或诊断请求。先原子保存用户消息和 streaming 占位，再发请求。可以切换会话查看，但回复始终写入原 sessionId。配置更改需等请求停止/结束。
+ChatService 管理普通聊天，最多一个活动生成或诊断请求。AgentService 使用独立 AbortController 和任务循环，可与聊天并行。先原子保存用户消息和 streaming 占位，再发请求。可以切换会话查看，但回复始终写入原 sessionId。Agent 任务启动时持有配置快照。
 
 每个请求持有 requestId/messageId/sessionId/AbortController。取消先令 active 失效，标记 cancelled、保存并通知 idle，再 abort；所有 chunk、完成、错误比较 active 对象。旧请求即使不响应 abort，也不能改新消息、新 active 或动画；旧 finally 仅保存当前库。
 
@@ -48,4 +48,6 @@ ChatService 经既有 handleActivityEvent({source:'chat',taskId,activity}) 驱�
 
 ## 后续边界
 
-本阶段仅用户配置的 OpenAI-Compatible 聊天。ChatGPT 登录、SIWC/OAuth、Codex App Server、Agent 自主执行、Shell/文件/Git 工具、MCP、浏览器自动化、SQLite 长期记忆、长期偏好、提醒和后台任务均未实施，也不会由模型回复触发。
+第三阶段增加主进程文件 Agent。工作面板专有 IPC 管理任务、审批和停止；设置专有 IPC 调用原生目录选择器，不接收任意授权路径。工具先经过 Ajv JSON Schema，再进行 WorkspaceSecurity 业务校验，串行执行并记录状态。AgentProvider 复用配置工厂和 CredentialStore，拼接 SSE tool_calls，首轮 required 验证能力。完整架构图和边界见 [STAGE3](STAGE3.md)。
+
+ShellExecutor 硬性禁用：CLI 0.128.0 实测允许删除外部夹具和访问 loopback。不存在普通进程 fallback，审批不能绕过此限制。文件工具尚未完成原生句柄竞态加固，不宣称完整安全认证。ChatGPT 登录、SIWC/OAuth、Codex App Server、MCP、浏览器自动化、SQLite、长期偏好、提醒和后台任务不在本阶段。

@@ -10,6 +10,15 @@ function subscribe<T>(channel: string, callback: (value: T) => void): () => void
 }
 
 const api: DesktopPetAPI = {
+  getWorkspace: () => ipcRenderer.invoke(IPC.workspace),
+  chooseWorkspace: () => ipcRenderer.invoke(IPC.workspaceChoose),
+  setAutoWrite: value => ipcRenderer.invoke(IPC.autoWrite, value),
+  getAgentSnapshot: () => ipcRenderer.invoke(IPC.agent),
+  onAgentSnapshot: callback => subscribe(IPC.agentChanged, callback),
+  startAgent: prompt => ipcRenderer.invoke(IPC.agentStart, prompt),
+  resumeAgent: id => ipcRenderer.invoke(IPC.agentResume, id),
+  cancelAgent: id => ipcRenderer.invoke(IPC.agentCancel, id),
+  decideApproval: input => ipcRenderer.invoke(IPC.agentApproval, input),
   getSnapshot: () => ipcRenderer.invoke(IPC.snapshot),
   onSnapshot: callback => {
     const listener = (_event: Electron.IpcRendererEvent, snapshot: AppSnapshot) => callback(snapshot);

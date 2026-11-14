@@ -1,5 +1,7 @@
 // Preload 仅暴露有类型的方法；Renderer 无法指定 IPC 通道。
 export const IPC = {
+  workspace: 'agent:workspace', workspaceChoose: 'agent:choose-workspace', autoWrite: 'agent:auto-write',
+  agent: 'agent:snapshot', agentChanged: 'agent:changed', agentStart: 'agent:start', agentResume: 'agent:resume', agentCancel: 'agent:cancel', agentApproval: 'agent:approval',
   snapshot: 'pet:snapshot', changed: 'pet:changed',
   beginDrag: 'pet:drag-begin', endDrag: 'pet:drag-end',
   wake: 'pet:wake', interact: 'pet:interact', finished: 'pet:animation-finished',
