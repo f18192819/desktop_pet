@@ -35,6 +35,7 @@ export interface PetActivityEvent {
 }
 export interface DesktopPetAPI {
   getWorkspace(): Promise<WorkspaceState>;
+  onWorkspaceChanged(callback: (state: WorkspaceState) => void): () => void;
   chooseWorkspace(): Promise<void>;
   setAutoWrite(value: boolean): Promise<void>;
   getAgentSnapshot(): Promise<AgentSnapshot>;

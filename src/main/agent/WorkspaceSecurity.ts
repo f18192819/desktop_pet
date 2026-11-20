@@ -1,11 +1,20 @@
 import { isAbsolute, parse, relative, resolve, sep } from 'node:path';
 import { nativeCall } from './NativeWorkspaceProxy';
+
+export function isWorkspaceIdentity(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9A-F]{8}:[0-9A-F]{16}$/.test(value);
+}
+
 export class WorkspaceSecurity {
-  readonly root: string;
-  readonly identity: string;
-  constructor(root: string, readonly protectedRoots: string[] = []) {
-    this.root = resolve(root);
-    this.identity = nativeCall(this.root, '', protectedRoots, 'identity', {}) as string;
+  private constructor(readonly root: string, readonly identity: string, private readonly protectedRoots: readonly string[]) {}
+
+  static async open(root: string, protectedRoots: readonly string[] = [], expectedIdentity?: string, signal?: AbortSignal) {
+    const path = resolve(root);
+    const identity = await nativeCall(path, expectedIdentity ?? '', protectedRoots, 'identity', {}, signal);
+    if (!isWorkspaceIdentity(identity) || (expectedIdentity !== undefined && identity !== expectedIdentity)) {
+      throw new Error('工作区身份无效或已变化，请在设置中重新选择');
+    }
+    return new WorkspaceSecurity(path, identity, protectedRoots);
   }
   contains(root: string, path: string) { const rel = relative(root, path); return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`)); }
   // Approval preflight only. Native policy is repeated under held handles.
@@ -18,5 +27,7 @@ export class WorkspaceSecurity {
     if (write && (!this.contains(this.root, target) || (!allowRoot && relative(this.root, target) === ''))) throw new Error('禁止写入工作区外或操作工作区根目录');
     return target;
   }
-  call(op: string, args: Record<string, string>) { return nativeCall(this.root, this.identity, this.protectedRoots, op, args); }
+  call(op: string, args: Record<string, string>, signal?: AbortSignal) {
+    return nativeCall(this.root, this.identity, this.protectedRoots, op, args, signal);
+  }
 }

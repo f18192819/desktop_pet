@@ -11,9 +11,9 @@ export interface ChatProvider {
   getBalance(signal: AbortSignal): Promise<BalanceState>;
 }
 export interface AgentRuntime {
-  start(prompt: string): string;
-  resume(taskId: string): void;
-  cancel(taskId: string): void;
+  start(prompt: string): Promise<string>;
+  resume(taskId: string): Promise<void>;
+  cancel(taskId: string): Promise<void>;
   snapshot(): AgentSnapshot;
 }
 export interface PermissionRequest {

@@ -11,6 +11,7 @@ function subscribe<T>(channel: string, callback: (value: T) => void): () => void
 
 const api: DesktopPetAPI = {
   getWorkspace: () => ipcRenderer.invoke(IPC.workspace),
+  onWorkspaceChanged: callback => subscribe(IPC.workspaceChanged, callback),
   chooseWorkspace: () => ipcRenderer.invoke(IPC.workspaceChoose),
   setAutoWrite: value => ipcRenderer.invoke(IPC.autoWrite, value),
   getAgentSnapshot: () => ipcRenderer.invoke(IPC.agent),

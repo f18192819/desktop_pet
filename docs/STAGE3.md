@@ -145,9 +145,15 @@ WorkspaceFS 的读、遍历、创建、补丁、复制、移动和删除全部�
 - 模拟 TxF 不可用，覆盖操作直接失败，原文件保持完整。
 - 31 组核心测试全部通过，无跳过。TypeScript 检查、Vite/Electron 构建以及 Electron 桌宠窗口、IPC 限制和真实进程重启冒烟测试均通过。
 
-未覆盖的情况包括其他 Windows 版本、Cloud Files 和第三方过滤驱动、管理员或内核级篡改、卷卸载重挂、文件 ID 回收、内存映射写入、真实断电与存储损坏。ReFS/FAT、网络卷、可移动卷、大小写敏感目录和长路径不在支持范围内。任务恢复仍需用户手动操作，工作区身份不跨历史任务持久化。
+未覆盖的情况包括其他 Windows 版本、Cloud Files 和第三方过滤驱动、管理员或内核级篡改、卷卸载重挂、文件 ID 回收、内存映射写入、真实断电与存储损坏。ReFS/FAT、网络卷、可移动卷、大小写敏感目录和长路径不在支持范围内。
 
 上述结果限定于本机 Windows 11 build 26300 与固定本地 NTFS 卷。Shell 保持禁用。
 
 新增文件：`native/WorkspaceProxy.cs`、`scripts/native.mjs`、`src/main/agent/NativeWorkspaceProxy.ts`。
 修改文件：WorkspaceSecurity、WorkspaceFS、ToolRegistry 的复制说明、build/test/smoke 脚本、agent.test.ts 和本记录。AgentRuntime、审批协议及 UI 接口保持兼容。
+
+## 3.1.1 异步代理与工作区绑定
+
+主进程异步启动原生代理，单次请求最长运行 30 秒，输入最多 2 Mi UTF-16 代码单元，标准输出最多 4 MiB，标准错误最多 64 KiB，标准错误内容不保留。取消、超时或输出超限时终止代理，并等待进程及管道关闭。操作明确成功后才记录文件变更。取消或无法确定结果的工具记录为 `interrupted`，任务停止当前执行轮次，恢复时不重放旧调用。文件提交与收到结果之间仍可能发生中断，手动继续前须先核对文件现状。
+
+原生选择器确认后，将代理返回的卷序列号和目录 File ID 写入 `workspace.json` 的 `identity`。每个任务保存自己的 `rootIdentity`。启动和手动继续前重新验证绑定，随后每次文件操作仍由代理核对身份。旧配置需在设置重新选择目录，旧任务缺少身份时只允许查看。窗口读取启动时异步验证的缓存状态，并通过独立的工作区事件更新。任务快照与流式输出不会触发工作区查询。

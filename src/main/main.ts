@@ -49,6 +49,13 @@ export async function startApp() {
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   const panels = new Map<Panel, BrowserWindow>();
   agent.subscribe(() => { const window = panels.get('work'); if (window && !window.isDestroyed()) window.webContents.send(IPC.agentChanged, agent.snapshot()); });
+  agent.subscribeWorkspace(() => {
+    const workspace = agent.workspaceState();
+    for (const role of ['work', 'settings'] as const) {
+      const window = panels.get(role);
+      if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send(IPC.workspaceChanged, workspace);
+    }
+  });
   chat.subscribe(() => {
     // 聊天内容只发送给聊天面板；设置面板只接收非敏感服务状态，桌宠不接收聊天数据。
     for (const [role, window] of panels) {
@@ -222,7 +229,7 @@ export async function startApp() {
   handle(IPC.workspaceChoose, ['settings'], async event => {
     agent.assertIdle(); const parent = BrowserWindow.fromWebContents(event.sender); if (!parent) throw new Error('窗口不存在');
     const result = await dialog.showOpenDialog(parent, { title: '选择 Agent 工作区', properties: ['openDirectory'] });
-    if (!result.canceled && result.filePaths[0]) agent.setWorkspace(result.filePaths[0]);
+    if (!result.canceled && result.filePaths[0]) await agent.setWorkspace(result.filePaths[0]);
   });
   handle(IPC.autoWrite, ['settings'], (_event, value) => { if (typeof value !== 'boolean') throw new Error('无效开关'); agent.setAutoWrite(value); });
   handle(IPC.agent, ['work'], () => agent.snapshot());
@@ -289,9 +296,18 @@ export async function startApp() {
   screen.on('display-added', correctBounds);
   screen.on('display-removed', correctBounds);
   screen.on('display-metrics-changed', correctBounds);
-  app.on('before-quit', () => {
+  let shutdownReady = false;
+  app.on('before-quit', event => {
+    if (shutdownReady) return;
+    event.preventDefault();
+    if (quitting) return;
     quitting = true;
-    endDrag(); recordPosition(); save(); agent.dispose(); chat.dispose(); state.dispose(); tray.destroy();
+    endDrag(); recordPosition(); save();
+    void agent.dispose().catch(() => console.error('退出时未能保存 Agent 状态')).finally(() => {
+      chat.dispose(); state.dispose(); tray.destroy();
+      shutdownReady = true;
+      app.quit();
+    });
   });
   updateTray();
   await pet.loadURL(PAGE);
