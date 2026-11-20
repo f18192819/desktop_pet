@@ -7,7 +7,7 @@ const definitions: Record<string, string[]> = {
 };
 const ajv = new Ajv({ allErrors: false });
 export const tools = Object.entries(definitions).map(([name, fields]) => ({ type: 'function' as const, function: {
-  name, description: name === 'apply_patch' ? 'Replace exactly one matching oldText with newText in a UTF-8 file.' : name === 'find_files' ? 'Find names with * glob. Bounded traversal.' : name === 'copy_path' ? 'Copy a UTF-8 text file into workspace.' : name === 'shell' ? 'Unavailable: OS sandbox has not passed certification. Never pretend commands ran.' : name,
+  name, description: name === 'apply_patch' ? 'Replace exactly one matching oldText with newText in a UTF-8 file.' : name === 'find_files' ? 'Find names with * glob. Bounded traversal.' : name === 'copy_path' ? 'Copy files or directories, including binary files, into workspace. Maximum total 8 MiB.' : name === 'shell' ? 'Unavailable: OS sandbox has not passed certification. Never pretend commands ran.' : name,
   parameters: { type: 'object', properties: Object.fromEntries(fields.map(f => [f, { type: 'string', maxLength: f === 'content' || f === 'oldText' || f === 'newText' ? 524288 : 8000 }])), required: fields, additionalProperties: false },
 } }));
 const validators = new Map(tools.map(t => [t.function.name, ajv.compile(t.function.parameters)]));

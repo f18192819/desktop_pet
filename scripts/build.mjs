@@ -1,5 +1,7 @@
 import { build as viteBuild } from 'vite';
 import { build } from 'esbuild';
+import { buildNative } from './native.mjs';
+buildNative();
 
 await viteBuild();
 await build({

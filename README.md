@@ -1,12 +1,12 @@
 # 艾玛 Desktop Companion · 0.3
 
-第三阶段新增本地文件 Agent。设置中选择工作区，在工作面板输入任务；默认写入逐次审批，删除始终审批，沿用已有 API 配置。**Shell 安全探测失败，Shell/Git/构建/代码执行保持禁用，完整安全验收未通过。** 详见 [第三阶段交付、文件边界与限制](docs/STAGE3.md)。外部读取内容可能发送给模型服务商；请阅读该文档的文件竞态限制。
+第三阶段新增本地文件 Agent。设置中选择工作区，在工作面板输入任务。默认写入逐次审批，删除始终审批，沿用已有 API 配置。文件工具通过 Windows x64 原生代理运行，事务写入需要支持 TxF 的本地 NTFS 卷。Shell/Git/构建/代码执行保持禁用。外部读取内容可能发送给模型服务商。实现和实测范围见 [第三阶段交付记录](docs/STAGE3.md#31-原生文件代理2026-11-20)。
 
 Windows Electron + React + TypeScript 桌宠，第二阶段增加 OpenAI-Compatible 实时聊天。用户自行配置 API Key、Base URL、Model ID，保留原有八种动画、窗口、拖动、多屏、托盘和偏好设置。没有新增 SDK 或数据库依赖。
 
 ## 启动
 
-Windows 10/11，Node.js >=22.12.0（推荐 Node 24）。先从托盘退出旧版，然后执行：
+Windows 10/11 x64，Node.js >=22.12.0（推荐 Node 24 x64）。构建原生代理需要 Windows 自带的 .NET Framework 4.x x64 C# 编译器。先从托盘退出旧版，然后执行：
 
 ```powershell
 npm ci

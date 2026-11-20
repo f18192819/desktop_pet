@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { electronEnvironment, electronPath } from './electron.mjs';
 await mkdir('.test-build/electron', { recursive: true });
+await cp('dist/native', '.test-build/native', { recursive: true });
 await cp('dist/renderer', '.test-build/renderer', { recursive: true });
 await cp('dist/electron/preload.cjs', '.test-build/electron/preload.cjs');
 await build({ entryPoints: ['tests/electron-smoke.ts'], outfile: '.test-build/electron/smoke.cjs', bundle: true, platform: 'node', format: 'cjs', target: 'node22', external: ['electron'] });

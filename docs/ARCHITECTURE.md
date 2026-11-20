@@ -50,4 +50,6 @@ ChatService 经既有 handleActivityEvent({source:'chat',taskId,activity}) 驱�
 
 第三阶段增加主进程文件 Agent。工作面板专有 IPC 管理任务、审批和停止；设置专有 IPC 调用原生目录选择器，不接收任意授权路径。工具先经过 Ajv JSON Schema，再进行 WorkspaceSecurity 业务校验，串行执行并记录状态。AgentProvider 复用配置工厂和 CredentialStore，拼接 SSE tool_calls，首轮 required 验证能力。完整架构图和边界见 [STAGE3](STAGE3.md)。
 
-ShellExecutor 硬性禁用：CLI 0.128.0 实测允许删除外部夹具和访问 loopback。不存在普通进程 fallback，审批不能绕过此限制。文件工具尚未完成原生句柄竞态加固，不宣称完整安全认证。ChatGPT 登录、SIWC/OAuth、Codex App Server、MCP、浏览器自动化、SQLite、长期偏好、提醒和后台任务不在本阶段。
+文件工具通过独立的 Windows x64 代理执行。代理以目录句柄和文件身份约束路径，覆盖、复制和递归删除通过 NTFS 事务提交。事务不可用时拒绝相关操作。机制、兼容性和实测范围见 [STAGE3](STAGE3.md#31-原生文件代理2026-11-20)。
+
+ShellExecutor 保持禁用。CLI 0.128.0 实测允许删除外部夹具和访问 loopback，审批无法启用 Shell。ChatGPT 登录、SIWC/OAuth、Codex App Server、MCP、浏览器自动化、SQLite、长期偏好、提醒和后台任务不在本阶段。
