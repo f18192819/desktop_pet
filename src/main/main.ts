@@ -231,7 +231,10 @@ export async function startApp() {
     const result = await dialog.showOpenDialog(parent, { title: '选择 Agent 工作区', properties: ['openDirectory'] });
     if (!result.canceled && result.filePaths[0]) await agent.setWorkspace(result.filePaths[0]);
   });
-  handle(IPC.autoWrite, ['settings'], (_event, value) => { if (typeof value !== 'boolean') throw new Error('无效开关'); agent.setAutoWrite(value); });
+  handle(IPC.toolPermission, ['settings'], (_event, value) => {
+    const input = object(value, ['tool', 'mode', 'identity']);
+    agent.setToolPermission(input.tool, input.mode, input.identity);
+  });
   handle(IPC.agent, ['work'], () => agent.snapshot());
   handle(IPC.agentStart, ['work'], (_event, value) => agent.start(boundedText(value, 32000, '任务指令')));
   handle(IPC.agentResume, ['work'], (_event, value) => agent.resume(validateId(value)));

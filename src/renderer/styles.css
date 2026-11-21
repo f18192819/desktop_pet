@@ -45,6 +45,10 @@ textarea::placeholder { color: #b4a5ab; }
 .settings-form input[type="range"] { width: 100%; accent-color: #b56b85; }
 .settings-form input[type="number"], .settings-form select { width: 100%; border: 1px solid #dfd5d6; border-radius: 9px; padding: 10px 12px; background: #fffdfb; }
 .settings-form .check { flex-direction: row; align-items: center; }
+.permission-list { display: grid; gap: 12px; }
+.permission-list h3 { margin: 0 0 4px; }
+.settings-form .permission-row { flex-direction: row; align-items: center; justify-content: space-between; padding: 3px 0; }
+.settings-form .permission-row select { width: auto; padding: 4px 8px; }
 input[type="checkbox"] { accent-color: #b56b85; width: 16px; height: 16px; }
 .settings-form small, .muted { font-size: 11px; color: #9c8c95; }
 .primary, .secondary { padding: 12px 18px; border-radius: 10px; border: 0; }

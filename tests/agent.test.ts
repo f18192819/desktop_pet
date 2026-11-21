@@ -11,6 +11,9 @@ import { validateTool } from '../src/main/agent/ToolRegistry';
 import { AgentService } from '../src/main/agent/AgentService';
 import { ShellExecutor } from '../src/main/agent/ShellExecutor';
 import { PermissionManager } from '../src/main/agent/PermissionManager';
+import { defaultPermissions } from '../src/main/agent/WorkspaceConfig';
+import { READ_TOOLS, WRITE_TOOLS } from '../src/shared/agent';
+import type { AgentMessage, ToolCall } from '../src/shared/agent';
 import type { ProviderConfig } from '../src/shared/chat';
 mkdirSync('.test-build', { recursive: true });
 const fixture = () => { const dir = mkdtempSync(resolve('.test-build/agent-')); const root = join(dir, 'work'); mkdirSync(root); return { dir, root }; };
@@ -223,7 +226,9 @@ test('Agent 持久化先于执行、审批取消、恢复不重放 pending 写�
   const fake = { turn: async () => ({ content: '', calls: [{ id: 'x', type: 'function' as const, function: { name: 'write_file', arguments: '{"path":"result.txt","content":"ok"}' } }] }) } as unknown as AgentProvider;
   const service = new AgentService(data, () => fake, () => {}); await service.setWorkspace(root); const id = await service.start('write');
   await until(() => service.snapshot().tasks[0].status === 'waitingApproval'); assert.ok(existsSync(join(data, 'agent-sessions.json')));
+  const approvalId = service.snapshot().tasks[0].approvals[0].id;
   await assert.rejects(service.setWorkspace(root)); await service.cancel(id);
+  assert.throws(() => service.permissions.decide(approvalId, true), /审批已过期/);
   assert.ok(!existsSync(join(root, 'result.txt'))); assert.equal(service.snapshot().tasks[0].tools[0].status, 'interrupted');
   const loaded = new AgentService(data, () => fake, () => {}); assert.equal(loaded.snapshot().activeId, null); assert.ok(!existsSync(join(root, 'result.txt'))); await service.dispose(); await loaded.dispose();
 });
@@ -252,7 +257,7 @@ test('工作区状态读取走缓存，目录替换和无身份历史均不能�
   const legacy = new AgentService(data, provider, () => {});
   await assert.rejects(legacy.start('legacy'), /重新选择/);
   assert.equal(legacy.workspaceState().valid, false);
-  assert.ok(!('identity' in JSON.parse(readFileSync(workspaceFile, 'utf8'))));
+  assert.equal(JSON.parse(readFileSync(workspaceFile, 'utf8')).identity, null);
   await legacy.setWorkspace(root);
   const saved = JSON.parse(readFileSync(workspaceFile, 'utf8'));
   assert.match(saved.identity, /^[0-9A-F]{8}:[0-9A-F]{16}$/);
@@ -296,7 +301,7 @@ test('停止任务会等待代理退出，未知结果标记 interrupted 并结�
   const service = new AgentService(data, () => fake, () => {});
   try {
     await service.setWorkspace(root);
-    service.setAutoWrite(true);
+    service.setToolPermission('write_file', 'allow', service.workspaceState().identity);
     const id = await service.start('cancel');
     await until(() => existsSync(pidFile) && statSync(pidFile).size > 0);
     const pid = Number(readFileSync(pidFile, 'utf8'));
@@ -316,4 +321,176 @@ test('停止任务会等待代理退出，未知结果标记 interrupted 并结�
     assert.deepEqual(task.changes, []);
     assert.equal(turns, 2);
   } finally { await service.dispose(); }
+});
+
+function scriptedAgent(data: string) {
+  let calls: ToolCall[] = [];
+  let modelResults: string[] = [];
+  const fake = { turn: async (messages: AgentMessage[]) => {
+    modelResults = messages.filter(message => message.role === 'tool').map(message => message.content);
+    return { content: '', calls: calls.splice(0) };
+  } } as unknown as AgentProvider;
+  const service = new AgentService(data, () => fake, () => {});
+  function start(batch: [string, Record<string, string>][]) {
+    calls = batch.map(([name, args], i) => ({ id: `call-${i}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }));
+    return service.start('permission fixture');
+  }
+  async function approval(index: number) {
+    await until(() => service.snapshot().tasks[0]?.approvals[index]?.status === 'pending');
+    return service.snapshot().tasks[0].approvals[index];
+  }
+  async function done() {
+    await until(() => service.snapshot().activeId === null);
+    return service.snapshot().tasks[0];
+  }
+  return { service, start, approval, done, modelResults: () => modelResults };
+}
+
+test('权限执行：工具独立、逐次询问、重复拒绝及特殊工具禁用', async () => {
+  const { dir, root } = fixture();
+  const agent = scriptedAgent(join(dir, 'data'));
+  const { service } = agent;
+  try {
+    await service.setWorkspace(root);
+    const { identity } = service.workspaceState();
+    service.setToolPermission('delete_path', 'deny', identity);
+    assert.throws(() => service.setToolPermission('shell', 'allow', identity), /无效/);
+    assert.throws(() => service.setToolPermission('request_network', 'allow', identity), /无效/);
+    assert.throws(() => service.setToolPermission('read_file', { mode: 'allow' }, identity), /无效/);
+    writeFileSync(join(root, 'input.txt'), 'input');
+    await agent.start([
+      ['update_plan', { plan: 'test' }],
+      ['read_file', { path: 'input.txt' }],
+      ['write_file', { path: 'first.txt', content: 'approved' }],
+      ['write_file', { path: 'second.txt', content: 'denied' }],
+      ['delete_path', { path: 'input.txt' }], ['delete_path', { path: 'input.txt' }],
+      ['shell', { command: 'disabled' }], ['request_network', { reason: 'disabled' }],
+    ]);
+    const first = await agent.approval(0);
+    assert.deepEqual(first.paths, [{ path: join(root, 'first.txt'), access: 'write', outsideWorkspace: false }]);
+    assert.ok(!existsSync(join(root, 'first.txt')));
+    service.permissions.decide(first.id, true);
+    const second = await agent.approval(1);
+    assert.notEqual(first.id, second.id);
+    assert.throws(() => service.permissions.decide(first.id, true), /审批已过期/);
+    service.permissions.decide(second.id, false);
+    const task = await agent.done();
+    assert.deepEqual(task.tools.map(tool => tool.status), ['completed', 'completed', 'completed', 'failed', 'failed', 'failed', 'failed', 'failed']);
+    assert.deepEqual(agent.modelResults().slice(1), [
+      'input', task.tools[2].result, '用户拒绝本次操作，请调整方案', '工具权限禁止：delete_path', '工具权限禁止：delete_path',
+      task.tools[6].result, task.tools[7].result,
+    ]);
+    assert.match(task.tools[6].result!, /Shell 已禁用/);
+    assert.match(task.tools[7].result!, /网络工具已禁用/);
+    assert.deepEqual(task.approvals.map(item => item.status), ['approved', 'denied']);
+    assert.equal(readFileSync(join(root, 'first.txt'), 'utf8'), 'approved');
+    assert.ok(!existsSync(join(root, 'second.txt')));
+    assert.ok(existsSync(join(root, 'input.txt')));
+    assert.equal(service.workspaceState().permissions.write_file, 'ask');
+    service.setToolPermission('delete_path', 'allow', identity);
+    await agent.start([['delete_path', { path: 'first.txt' }]]);
+    const deleted = await agent.done();
+    assert.equal(deleted.tools[0].status, 'completed');
+    assert.equal(deleted.approvals.length, 0);
+    assert.ok(!existsSync(join(root, 'first.txt')));
+  } finally { await service.dispose(); }
+});
+
+test('权限执行：外部读取独立，复制检查源和目标，外部写入无法审批', async () => {
+  const { dir, root } = fixture();
+  const outside = join(dir, 'work-neighbor'); mkdirSync(outside);
+  const source = join(outside, 'source.txt'); writeFileSync(source, 'external');
+  writeFileSync(join(root, 'inside.txt'), 'internal');
+  const agent = scriptedAgent(join(dir, 'data'));
+  const { service } = agent;
+  try {
+    await service.setWorkspace(root);
+    const { identity } = service.workspaceState();
+    service.setToolPermission('copy_path', 'allow', identity);
+    await agent.start([['copy_path', { path: '../work-neighbor/source.txt', destination: 'copy.txt' }]]);
+    const copy = await agent.approval(0);
+    assert.deepEqual(copy.paths, [
+      { path: source, access: 'read', outsideWorkspace: true },
+      { path: join(root, 'copy.txt'), access: 'write', outsideWorkspace: false },
+    ]);
+    service.permissions.decide(copy.id, true);
+    assert.equal((await agent.done()).tools[0].status, 'completed');
+    assert.equal(readFileSync(join(root, 'copy.txt'), 'utf8'), 'external');
+
+    service.setToolPermission('external_read', 'deny', identity);
+    await agent.start([
+      ['read_file', { path: 'inside.txt' }], ['stat_path', { path: source }],
+      ['copy_path', { path: source, destination: 'blocked.txt' }], ['copy_path', { path: 'inside.txt', destination: join(outside, 'out.txt') }],
+    ]);
+    const blocked = await agent.done();
+    assert.equal(blocked.tools[0].result, 'internal');
+    assert.match(blocked.tools[1].result!, /工作区外读取/);
+    assert.match(blocked.tools[2].result!, /工作区外读取/);
+    assert.match(blocked.tools[3].result!, /禁止写入工作区外/);
+    assert.equal(blocked.approvals.length, 0);
+    assert.ok(!existsSync(join(outside, 'out.txt')));
+    assert.ok(!existsSync(join(root, 'blocked.txt')));
+
+    service.setToolPermission('external_read', 'allow', identity);
+    service.setToolPermission('read_file', 'deny', identity);
+    await agent.start([['copy_path', { path: 'inside.txt', destination: 'blocked.txt' }]]);
+    assert.match((await agent.done()).tools[0].result!, /工具权限禁止：read_file/);
+
+    service.setToolPermission('read_file', 'allow', identity);
+    service.setToolPermission('copy_path', 'ask', identity);
+    await agent.start([['copy_path', { path: source, destination: 'blocked.txt' }]]);
+    const pending = await agent.approval(0);
+    service.setToolPermission('copy_path', 'deny', identity);
+    service.permissions.decide(pending.id, true);
+    assert.match((await agent.done()).tools[0].result!, /工具权限禁止：copy_path/);
+    assert.ok(!existsSync(join(root, 'blocked.txt')));
+  } finally { await service.dispose(); }
+});
+
+test('权限配置：迁移旧开关、按身份恢复并安全处理损坏配置', async () => {
+  const { dir, root } = fixture(); const data = join(dir, 'data'); mkdirSync(data);
+  const other = join(dir, 'other'); mkdirSync(other);
+  const file = join(data, 'workspace.json');
+  const { identity } = await WorkspaceSecurity.open(root);
+  const open = () => new AgentService(data, () => { throw new Error('此测试不启动模型'); }, () => {});
+  for (const autoWrite of [false, true]) {
+    writeFileSync(file, JSON.stringify({ root, identity, autoWrite }));
+    const migrated = open();
+    const { permissions } = migrated.workspaceState();
+    for (const tool of READ_TOOLS) assert.equal(permissions[tool], 'allow');
+    for (const tool of WRITE_TOOLS) assert.equal(permissions[tool], autoWrite && tool !== 'delete_path' ? 'allow' : 'ask');
+    assert.equal(permissions.external_read, 'ask');
+    const saved = JSON.parse(readFileSync(file, 'utf8'));
+    assert.equal(saved.version, 2);
+    assert.ok(!('autoWrite' in saved));
+    assert.deepEqual(saved.permissionsByIdentity[identity], permissions);
+    await migrated.dispose();
+  }
+  const service = open();
+  try {
+    await service.setWorkspace(other);
+    assert.deepEqual(service.workspaceState().permissions, defaultPermissions());
+    assert.throws(() => service.setToolPermission('write_file', 'allow', identity), /工作区已变更/);
+    await service.setWorkspace(root);
+    assert.equal(service.workspaceState().permissions.write_file, 'allow');
+    service.setToolPermission('delete_path', 'deny', identity);
+    await service.setWorkspace(root);
+    assert.equal(service.workspaceState().permissions.delete_path, 'deny');
+  } finally { await service.dispose(); }
+  const saved = JSON.parse(readFileSync(file, 'utf8'));
+  const restarted = open();
+  assert.equal(restarted.workspaceState().permissions.delete_path, 'deny');
+  assert.equal(restarted.workspaceState().permissions.write_file, 'allow');
+  await restarted.dispose();
+
+  saved.permissionsByIdentity[identity].read_file = 'invalid';
+  writeFileSync(file, JSON.stringify(saved));
+  const corruptProfile = open();
+  assert.deepEqual(corruptProfile.workspaceState().permissions, defaultPermissions());
+  await corruptProfile.dispose();
+  writeFileSync(file, '{invalid');
+  const corruptFile = open();
+  assert.equal(corruptFile.workspaceState().valid, false);
+  assert.deepEqual(corruptFile.workspaceState().permissions, defaultPermissions());
+  await corruptFile.dispose();
 });

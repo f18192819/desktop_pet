@@ -1,6 +1,6 @@
 # 艾玛 Desktop Companion · 0.3
 
-第三阶段新增本地文件 Agent。设置中选择工作区，在工作面板输入任务。默认写入逐次审批，删除始终审批，沿用已有 API 配置。文件工具通过 Windows x64 原生代理运行，事务写入需要支持 TxF 的本地 NTFS 卷。Shell/Git/构建/代码执行保持禁用。外部读取内容可能发送给模型服务商。实现和实测范围见 [第三阶段交付记录](docs/STAGE3.md#31-原生文件代理2026-11-20)。
+第三阶段新增本地文件 Agent。设置中选择工作区，在工作面板输入任务，沿用已有 API 配置。设置可为每种文件工具选择始终允许、每次询问或禁止。默认允许工作区内读取，工作区外读取及文件修改逐次审批。文件工具通过 Windows x64 原生代理运行，事务写入需要支持 TxF 的本地 NTFS 卷。Shell、网络和命令执行保持禁用。获准读取的内容可能发送给模型服务商。权限和迁移说明见 [第三阶段交付记录](docs/STAGE3.md#32-工具权限中心)。
 
 Windows Electron + React + TypeScript 桌宠，第二阶段增加 OpenAI-Compatible 实时聊天。用户自行配置 API Key、Base URL、Model ID，保留原有八种动画、窗口、拖动、多屏、托盘和偏好设置。没有新增 SDK 或数据库依赖。
 
@@ -76,7 +76,7 @@ Electron userData 通常是 `%APPDATA%/Emma Desktop Companion/`：
 | pet-settings.json | 原有桌宠偏好及位置 |
 | ai-provider.json | 非敏感服务配置，无 Key |
 | ai-credentials.bin | safeStorage 加密后的端点绑定凭据 |
-| workspace.json | 原生选择器授权的工作区及写入审批选项 |
+| workspace.json | 选中的工作区及按目录身份保存的工具权限 |
 | agent-sessions.json | Agent 任务、工具结果、计划、审批及修改记录 |
 | conversations.json | 版本化会话、消息、状态、模型、实际 usage，无凭据 |
 

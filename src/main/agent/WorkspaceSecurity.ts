@@ -1,4 +1,5 @@
 import { isAbsolute, parse, relative, resolve, sep } from 'node:path';
+import type { OperationPath } from '../../shared/agent';
 import { nativeCall } from './NativeWorkspaceProxy';
 
 export function isWorkspaceIdentity(value: unknown): value is string {
@@ -26,6 +27,16 @@ export class WorkspaceSecurity {
     if (parse(target).root === target || this.protectedRoots.some(root => this.contains(root, target))) throw new Error('禁止访问根目录或应用数据');
     if (write && (!this.contains(this.root, target) || (!allowRoot && relative(this.root, target) === ''))) throw new Error('禁止写入工作区外或操作工作区根目录');
     return target;
+  }
+  operationPath(input: string, access: OperationPath['access']): OperationPath {
+    const path = this.path(input, access === 'write');
+    const rel = relative(this.root, path);
+    // Compare the reconstructed path conservatively. JavaScript's Unicode case
+    // folding may consider distinct NTFS names equal, so only fold ASCII here.
+    const fold = (value: string) => value.replace(/[A-Z]/g, letter => letter.toLowerCase());
+    const outsideWorkspace = !this.contains(this.root, path) || fold(resolve(this.root, rel)) !== fold(path);
+    if (access === 'write' && outsideWorkspace) throw new Error('禁止写入工作区外');
+    return { path, access, outsideWorkspace };
   }
   call(op: string, args: Record<string, string>, signal?: AbortSignal) {
     return nativeCall(this.root, this.identity, this.protectedRoots, op, args, signal);

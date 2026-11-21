@@ -1,4 +1,7 @@
 import Ajv from 'ajv';
+import { READ_TOOLS, WRITE_TOOLS } from '../../shared/agent';
+import type { FileTool } from '../../shared/agent';
+import type { WorkspaceSecurity } from './WorkspaceSecurity';
 const definitions: Record<string, string[]> = {
   list_directory: ['path'], read_file: ['path'], search_files: ['path', 'query'], find_files: ['path', 'query'],
   write_file: ['path', 'content'], apply_patch: ['path', 'oldText', 'newText'], create_directory: ['path'],
@@ -17,4 +20,34 @@ export function validateTool(name: string, args: string): Record<string, string>
   const validate = validators.get(name); if (!validate || !validate(value)) throw new Error('工具名或 JSON Schema 参数校验失败');
   return value as Record<string, string>;
 }
-export const writes = new Set(['write_file', 'apply_patch', 'create_directory', 'move_path', 'rename_path', 'delete_path', 'copy_path']);
+const reads: ReadonlySet<string> = new Set(READ_TOOLS);
+const writes: ReadonlySet<string> = new Set(WRITE_TOOLS);
+const impacts: Record<FileTool, string> = {
+  list_directory: '列出目录中的条目。',
+  read_file: '读取文件内容。',
+  search_files: '在文件内容中搜索并返回匹配项。',
+  find_files: '按名称查找文件或目录。',
+  stat_path: '查看文件或目录的属性。',
+  write_file: '创建新文件或覆盖现有文件的内容。',
+  apply_patch: '替换文件中匹配的文本。',
+  create_directory: '创建目录。',
+  copy_path: '读取源文件或目录，写入目标。复制单个文件可能覆盖目标文件。',
+  move_path: '将源文件或目录移到目标路径。',
+  rename_path: '将源文件或目录重命名为目标路径。',
+  delete_path: '删除文件，或递归删除目录及其内容。',
+};
+
+export function fileOperation(name: string, args: Record<string, string>, security: WorkspaceSecurity) {
+  if (!reads.has(name) && !writes.has(name)) throw new Error('此工具不可执行');
+  const tool = name as FileTool;
+  const source = security.operationPath(args.path, reads.has(name) || tool === 'copy_path' ? 'read' : 'write');
+  const paths = [source];
+  const normalized = { ...args, path: source.path };
+  if (tool === 'copy_path' || tool === 'move_path' || tool === 'rename_path') {
+    const destination = security.operationPath(args.destination, 'write');
+    paths.push(destination);
+    Object.assign(normalized, { destination: destination.path });
+  }
+  const description = impacts[tool] + (paths.some(path => path.outsideWorkspace) ? '读取结果可能发送给当前模型服务商。' : '');
+  return { tool, args: normalized, paths, description };
+}
