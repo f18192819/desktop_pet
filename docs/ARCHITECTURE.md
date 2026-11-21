@@ -69,3 +69,24 @@ ChatGPT 登录、SIWC/OAuth、Codex App Server、MCP、浏览器自动化、SQLi
 主进程将验证后的命令、路径、工作区身份和全部所需权限绑定到一次性审批 ID。任一所需权限为 `deny` 就直接拒绝，`shell` 或 `external_read` 为 `ask` 时生成审批。批准后再次校验工作区绑定及权限。窗口只提交审批 ID 和批准或拒绝决定。取消任务或将所需权限设为 `deny` 会使待审批 ID 立即失效。命令和回绝原因保存在现有任务记录中。
 
 命令入口只接受固定运行时名称。优先在支持 Hyper-V 的宿主上验证独立 Windows 来宾。实际运行时路径、镜像、只读导入、变更导出及宿主提交协议还未接入。启动门禁独立于审批，当前保持禁用。详见 [3.3.1 环境评估和验收](STAGE3.md#331-shell-审批和虚拟化验收)。
+
+### 3.3.2 Windows VM 原型
+
+```mermaid
+flowchart LR
+  A[AgentService] --> B[授权与工作区绑定]
+  B --> C[ShellExecutor]
+  C --> D[SandboxLauncher]
+  D --> E[生产启动门禁关闭]
+  F[只读诊断] --> D
+  D -->|检测| G[VirtualBoxSandboxProvider]
+  G -.->|候选：独立虚拟串口| H[可复位 Windows 来宾]
+  H -.->|候选：输出和变更帧| I[有界协议解码]
+  I -.->|候选：提交门禁| J[NativeWorkspaceProxy]
+```
+
+`SandboxProvider` 定义 `detect`、`create`、`start`、`execute`、`cancel`、`collect`、`destroy`。VirtualBox 实现目前提供只读环境探测，其余方法统一拒绝。虚线是尚未接通的来宾、传输和提交链路。生产 `SandboxLauncher` 的许可始终关闭，诊断结果不能更改许可。
+
+每条命令有独立执行 ID、工作区原生身份和明确获准的外部路径。停止任务、修改相关权限为 `deny` 和执行超时都会中止对应信号。任务继续占用执行槽位直到后端清理 Promise 返回。提交回调仅在这一条命令活动期间有效，在原生工作区身份查询前后重新检查授权。真正的提交还必须由原生代理在持有句柄时校验变更路径、对象和基线，禁止通过普通文件 API 写回。
+
+协议将宿主授权与线上数据分开。传入 VM 的数据只能包含相对来宾路径、文件内容和命令参数。宿主路径、工作区身份、权限回调和凭据留在 Electron 主进程。宿主收取的是有界数据帧，通过校验的结果仍属于待核验数据。详见 [3.3.2 原型记录](STAGE3.md#332-windows-vm-原型)。

@@ -278,3 +278,54 @@ Agent 先保存工具状态 `running` 并触发 `working`，再等待 ShellExecu
 失败关闭回归使用真实宿主外部 sentinel，检查内容、文件 ID、硬链接数、大小和修改、变更时间。该测试验证批准后仍拒绝启动，不属于运行命令后的隔离验收。
 
 3.3.1 首轮交付的类型检查和构建通过，42 项自动测试通过。异步执行与超时夹具修复后，`npm run typecheck`、`npm run build` 和 `npm test` 均通过，44 项测试通过、0 项跳过。
+
+## 3.3.2 Windows VM 原型
+
+### 本机现场复查与方案
+
+Windows 11 家庭版 x64 build 26300，检测到 hypervisor，Virtual Machine Platform 已启用，Windows Hypervisor Platform 未启用。未发现完整 Hyper-V 角色、Hyper-V 管理模块、VirtualBox 或 QEMU。WSL 列出了处于停止状态的 Ubuntu 和 Docker Desktop WSL2 发行版。仓库未提供独立 Windows 来宾镜像。`npm run sandbox:diagnose` 进行只读检查。当前没有完成 VM 原型安全认证的 Windows 版本。
+
+| 方案 | 当前选择 |
+| --- | --- |
+| VirtualBox | 本机家庭版优先验证候选。独立 Windows 来宾可使用无网卡配置、差分磁盘和虚拟串口 Host Pipe。需要用户许可安装适用于 Windows x64 的 VirtualBox 和驱动，并准备获许可的 Windows 来宾基盘。须单独验证与当前 Hypervisor 的兼容性、宿主管道 ACL 和启动策略。[Oracle 用户手册](https://docs.oracle.com/en/virtualization/virtualbox/7.2/user/EN-VBOX-7-2-USER.pdf) |
+| QEMU + WHPX | WHPX 功能关闭，QEMU 未发现。若单独启用，须校验固定版本的加速器、机型、设备及宿主进程限制。排除 QEMU TCG 作为独立安全边界。[WHPX 要求](https://www.qemu.org/docs/master/system/whpx.html) · [QEMU 安全模型](https://www.qemu.org/docs/master/system/security.html) |
+| Hyper-V | 适用宿主上的替代方案。Windows 11 家庭版缺少完整角色。另可在已启用完整 Hyper-V 的 Windows 11 Pro 或 Enterprise 环境验证。可评估专用串口命名管道，无需开放网络。[微软安装要求](https://learn.microsoft.com/windows-server/virtualization/hyper-v/get-started/install-hyper-v) · [Hyper-V COM 管道](https://learn.microsoft.com/powershell/module/hyper-v/set-vmcomport) |
+| WSL2 | 可用于 Linux 任务，但当前目标要求原生 Windows 来宾。WSL 的 Windows 互操作、宿主文件挂载和网络转发也不适合作为这条隔离边界。[微软 WSL 互操作](https://learn.microsoft.com/windows/dev-environment/wsl-interop) |
+
+未安装任何组件、启用 Windows 功能、改动驱动和系统配置或下载镜像。已交付的 VirtualBox Provider 能探测宿主，其余生命周期方法明确拒绝。检测到候选程序也不能开启 Shell。
+
+### VM 与协议边界
+
+1. 候选 VM 从固定版本的只读 Windows 基盘和可信运行时启动，每次使用可丢弃的差分磁盘。工作区只在来宾生成可写副本。候选初始资源预算为 2 vCPU、4 GiB 内存和受配额约束的差分磁盘。仅安装明确允许的工具，运行时别名映射到来宾中的固定只读绝对路径。工作命令运行在来宾非管理员账户，子进程受进程树限制。
+2. 无宿主共享文件夹、宿主目录映射、USB、拖放或剪贴板，也不配置虚拟网卡和默认集成通道。宿主服务、外网与来宾自身的 Loopback 分开验收。无虚拟网卡无法关闭来宾自身的 Loopback。只保留一条专用虚拟串口和 ACL 受限的本地 Host Pipe，不暴露 Electron IPC。凭据和宿主环境变量不进入来宾。
+3. 从原生代理按工作区身份取得普通文件和基线。外部输入只取本次获准的普通文件，通过单独只读介质交给来宾，路径使用来宾别名。宿主路径和授权令牌不会进入线上协议。禁止在宿主挂载来宾可写盘。来宾收集器必须使用原生对象检查拒绝链接、重解析点、硬链接、设备和 ADS。
+4. 已实现协议版本 1。帧为 4 字节小端长度加严格 UTF-8 JSON，执行 ID 由 32 个十六进制字符组成。单帧上限 3 MiB，来宾报告总传输 8 MiB，单文件 1 MiB，清单内容总量 2 MiB，stdout/stderr 各 128 KiB。输入中工作区和只读条目分开。输出仅接受有界输出块和一个终态，接收端确认传输结束后才交出终态结果。文件用 Base64、字节数和 SHA-256，覆盖或删除携带预期基线哈希。路径只接收有限 ASCII 相对段，拒绝盘符、穿越、反斜杠、ADS、设备保留名、8.3 别名和大小写冲突。对象类型字段不能声明链接或特殊对象。
+5. 协议校验无法证明来宾文件在文件系统中没有链接。未经信任的来宾结果仍需要宿主对照可信基线，并在持有句柄和身份校验的原生代理里提交。只有提交结果能进入 Diff。当前未接通串口、来宾收集器、只读介质和二进制快照或带基线校验的原生提交。没有自动写回或目录复制降级路径。
+
+### 权限和执行
+
+ShellExecutor 收到这次命令专属的工作区根、原生身份、已授权外部路径和主进程提交门禁。启动时重查权限。只有当前命令能使用它自己的审批，命令结束后回调失效。提交门禁在查询实际工作区身份前后重查权限与取消状态。`shell` 或适用的 `external_read` 变为 `deny` 时撤销待审批并中止对应的活动执行。用户取消和超时也会传入 AbortSignal。未来的 VM Provider 必须在终止来宾及其进程树、清理资源后才结束 Promise。流式输出回调已经定义，生产启动入口仍拒绝，因而没有实际 VM 输出或文件提交。
+
+### 实测范围
+
+| # | 验收项 | 结果 |
+| --- | --- | --- |
+| 1 | VM 启动、销毁 | 未执行 |
+| 2 | 来宾固定命令 | 未执行 |
+| 3 | 来宾工作区副本读写 | 未执行 |
+| 4 | 执行期间宿主工作区不变 | 未执行 VM 测试 |
+| 5 | 未授权外部文件不可见 | 未执行 |
+| 6 | 授权外部文件只读 | 未执行 |
+| 7 | 来宾不可读宿主凭据 | 未执行 |
+| 8 | 来宾不可访问宿主文件和 IPC | 未执行 |
+| 9 | 来宾不可访问宿主网络及互联网 | 未执行 |
+| 10 | 来宾子进程无法逃出 | 未执行 |
+| 11 | 超时停止 VM 和进程 | Agent 信号与提交拒绝测试，未执行 VM 测试 |
+| 12 | 取消后无 VM 或进程残留 | Agent 等待接口测试，未执行 VM 测试 |
+| 13 | 拒绝恶意导出路径 | 本地字节帧和路径校验通过，未连接来宾 |
+| 14 | 导出仅由原生代理提交 | 未接通真实导出与提交 |
+| 15 | 身份变化拒绝提交 | 门禁测试调用真实原生代理拒绝目录替换，未执行 VM 提交 |
+
+工作区外 sentinel 的内容、文件 ID、硬链接数、大小及时间在提交门禁拒绝后的检查中保持不变。该用例未启动 VM。完整证据齐备前，生产门禁保持关闭。
+
+本轮 `npm run sandbox:diagnose` 返回候选缺失且 `productionShell.enabled: false`。`npm run typecheck`、`npm run build` 和 `npm test` 均通过，51 项测试通过、0 项失败、0 项跳过。

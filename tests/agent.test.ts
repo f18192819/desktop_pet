@@ -12,6 +12,7 @@ import { validateShellTool, validateTool } from '../src/main/agent/ToolRegistry'
 import { AgentService } from '../src/main/agent/AgentService';
 import { ShellExecutor } from '../src/main/agent/ShellExecutor';
 import { SandboxLauncher } from '../src/main/agent/SandboxLauncher';
+import type { ShellExecutionRequest } from '../src/main/agent/sandbox/SandboxProvider';
 import { PermissionManager } from '../src/main/agent/PermissionManager';
 import { defaultPermissions } from '../src/main/agent/WorkspaceConfig';
 import { READ_TOOLS, WRITE_TOOLS } from '../src/shared/agent';
@@ -226,8 +227,12 @@ test('一次性审批、取消和 Shell fail closed', async () => {
   c.abort();
   assert.equal(await cancelled, 'denied');
   const command = { executable: 'git', args: ['status'], cwd: '.', readOnlyPaths: [], timeoutMs: 1000 };
-  await assert.rejects(new ShellExecutor().execute(command, new AbortController().signal), /Shell 已禁用/);
-  await assert.rejects(new ShellExecutor().execute(command, c.signal), { name: 'AbortError' });
+  const request = {
+    id: 'a'.repeat(32), command, workspaceRoot: '.', workspaceIdentity: '00000000:0000000000000001',
+    approvedReadOnlyPaths: [], beforeCommit: async () => { assert.fail('Disabled launcher must never attempt a commit'); },
+  };
+  await assert.rejects(new ShellExecutor().execute(request, new AbortController().signal), /Shell 已禁用/);
+  await assert.rejects(new ShellExecutor().execute(request, c.signal), { name: 'AbortError' });
 });
 test('Agent 持久化先于执行、审批取消、恢复不重放 pending 写入', async () => {
   const { dir, root } = fixture(); const data = join(dir, 'data');
@@ -731,6 +736,107 @@ test('Shell 异步接口：取消等待后端清理完成，并中断当前工�
     releaseCleanup();
     await service.dispose();
   }
+});
+
+test('VM 请求绑定授权路径，拒绝对应权限时中止执行并禁用提交', async t => {
+  const { dir, root } = fixture();
+  const { service, start, approval, done } = scriptedAgent(join(dir, 'data'));
+  const external = join(dir, 'external.txt');
+  const command = { executable: 'git', args: ['status'], cwd: '.', readOnlyPaths: [external], timeoutMs: 5000 };
+  let execution: { request: ShellExecutionRequest; signal: AbortSignal } | undefined;
+  let finish = () => {};
+  const cleanup = new Promise<void>(resolve => { finish = resolve; });
+  t.mock.method(SandboxLauncher.prototype, 'launch', async (request: ShellExecutionRequest, signal: AbortSignal) => {
+    execution = { request, signal };
+    await cleanup;
+    return { exitCode: 0, stdout: '', stderr: '' };
+  });
+  try {
+    await service.setWorkspace(root);
+    const { identity } = service.workspaceState();
+    await start([['shell', command]]);
+    const pending = await approval(0);
+    service.permissions.decide(pending.id, true);
+    await until(() => execution !== undefined);
+    assert.ok(execution);
+    const { request, signal } = execution;
+    assert.match(request.id, /^[0-9a-f]{32}$/);
+    assert.equal(request.workspaceRoot, root);
+    assert.equal(request.workspaceIdentity, identity);
+    assert.deepEqual(request.approvedReadOnlyPaths, [external]);
+    service.setToolPermission('write_file', 'deny', identity);
+    assert.equal(signal.aborted, false);
+    service.setToolPermission('external_read', 'deny', identity);
+    assert.equal(signal.aborted, true);
+    assert.notEqual(service.snapshot().activeId, null);
+    service.setToolPermission('external_read', 'allow', identity);
+    await assert.rejects(request.beforeCommit, /执行权限已撤销：external_read/);
+    finish();
+    const task = await done();
+    assert.equal(task.tools[0].status, 'failed');
+    assert.match(task.tools[0].result!, /执行权限已撤销：external_read/);
+    assert.deepEqual(task.changes, []);
+  } finally { finish(); await service.dispose(); }
+});
+
+test('VM 提交门禁使用原生目录身份校验并拒绝已结束的授权', async t => {
+  const { dir, root } = fixture();
+  const { service, start, done } = scriptedAgent(join(dir, 'data'));
+  const sentinel = join(dir, 'sentinel.bin');
+  writeFileSync(sentinel, Buffer.from([0, 255, 33]));
+  const content = readFileSync(sentinel);
+  const before = statSync(sentinel, { bigint: true });
+  let stale: ShellExecutionRequest['beforeCommit'] | undefined;
+  let swapRoot = false;
+  t.mock.method(SandboxLauncher.prototype, 'launch', async (request: ShellExecutionRequest) => {
+    stale = request.beforeCommit;
+    if (swapRoot) {
+      renameSync(root, join(dir, 'original'));
+      mkdirSync(root);
+    }
+    await request.beforeCommit();
+    return { exitCode: 0, stdout: '', stderr: '' };
+  });
+  try {
+    await service.setWorkspace(root);
+    service.setToolPermission('shell', 'allow', service.workspaceState().identity);
+    const command = { executable: 'git', args: ['status'], cwd: '.', readOnlyPaths: [], timeoutMs: 5000 };
+    await start([['shell', command]]);
+    assert.equal((await done()).tools[0].status, 'completed');
+    assert.ok(stale);
+    await assert.rejects(stale, /命令授权已结束/);
+    swapRoot = true;
+    await start([['shell', command]]);
+    const task = await done();
+    assert.equal(task.tools[0].status, 'failed');
+    assert.match(task.tools[0].result!, /Workspace identity changed|身份.*变化/);
+    assert.deepEqual(task.changes, []);
+    const after = statSync(sentinel, { bigint: true });
+    assert.deepEqual([after.ino, after.nlink, after.size, after.mtimeNs, after.ctimeNs],
+      [before.ino, before.nlink, before.size, before.mtimeNs, before.ctimeNs]);
+    assert.deepEqual(readFileSync(sentinel), content);
+  } finally { await service.dispose(); }
+});
+
+test('VM 请求超时发出取消信号，执行结果与排队的提交均被拒绝', async t => {
+  const { dir, root } = fixture();
+  const { service, start, done } = scriptedAgent(join(dir, 'data'));
+  let timedOut = false;
+  t.mock.method(SandboxLauncher.prototype, 'launch', async (request: ShellExecutionRequest, signal: AbortSignal) => {
+    if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+    timedOut = signal.reason?.name === 'TimeoutError';
+    await assert.rejects(request.beforeCommit, { name: 'TimeoutError' });
+    return { exitCode: 0, stdout: '', stderr: '' };
+  });
+  try {
+    await service.setWorkspace(root);
+    service.setToolPermission('shell', 'allow', service.workspaceState().identity);
+    await start([['shell', { executable: 'node', args: ['--version'], cwd: '.', readOnlyPaths: [], timeoutMs: 100 }]]);
+    const task = await done();
+    assert.equal(timedOut, true);
+    assert.equal(task.tools[0].status, 'failed');
+    assert.deepEqual(task.changes, []);
+  } finally { await service.dispose(); }
 });
 
 test('Windows 原生 Job 夹具：计时器触发终止及零残留进程、关闭即清理、禁止 breakaway', async () => {

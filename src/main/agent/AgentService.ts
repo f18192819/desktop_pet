@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import type { AgentSnapshot, AgentTask, Approval, WorkspaceState } from '../../shared/agent';
+import type { AgentSnapshot, AgentTask, Approval, PermissionKey, ShellCommand, WorkspaceState } from '../../shared/agent';
 import type { PetActivityEvent } from '../../shared/types';
 import { atomicWrite } from '../chat/storage';
 import { AgentProvider } from './AgentProvider';
@@ -15,7 +15,12 @@ import { defaultPermissions, isPermissionKey, isPermissionMode, loadWorkspaceCon
 import type { WorkspaceConfig } from './WorkspaceConfig';
 import type { AgentRuntime } from '../integrations/contracts';
 
-type ActiveTask = { id: string; controller: AbortController; done: Promise<void> };
+type ActiveTask = {
+  id: string;
+  controller: AbortController;
+  done: Promise<void>;
+  shell?: { identity: string; required: readonly PermissionKey[]; controller: AbortController };
+};
 
 export class AgentService implements AgentRuntime {
   readonly store: AgentSessionStore;
@@ -120,6 +125,10 @@ export class AgentService implements AgentRuntime {
     });
     try {
       if (mode === 'deny') {
+        const running = this.active?.shell;
+        if (running?.identity === expectedIdentity && running.required.includes(tool)) {
+          running.controller.abort(new Error(`执行权限已撤销：${tool}`));
+        }
         const revoked = this.permissions.revokePermission(expectedIdentity, tool);
         const task = this.store.tasks.find(task => task.id === this.active?.id && task.rootIdentity === expectedIdentity);
         if (task && revoked.length) {
@@ -180,6 +189,41 @@ export class AgentService implements AgentRuntime {
     this.active = active;
     this.changed();
   }
+  private async executeShell(active: ActiveTask, security: WorkspaceSecurity, id: string, command: ShellCommand,
+    required: readonly PermissionKey[], approvalId?: string) {
+    const controller = new AbortController();
+    const taskSignal = active.controller.signal;
+    const signal = AbortSignal.any([taskSignal, controller.signal, AbortSignal.timeout(command.timeoutMs)]);
+    const execution = { identity: security.identity, required, controller };
+    const verify = () => {
+      signal.throwIfAborted();
+      if (active.shell !== execution) throw new Error('命令授权已结束');
+      if (this.active !== active || !this.workspaceValid || this.workspace.root !== security.root || this.workspace.identity !== security.identity) {
+        throw new Error('命令绑定的工作区已变更');
+      }
+      if (this.permissions.needsApproval(this.workspacePermissions(), required) && !approvalId) {
+        throw new Error('命令权限已改为需要审批，请重新请求');
+      }
+    };
+    const beforeCommit = async () => {
+      verify();
+      await WorkspaceSecurity.open(security.root, [this.dir], security.identity, signal);
+      verify();
+    };
+    active.shell = execution;
+    try {
+      verify();
+      const result = await this.shell.execute({
+        id: id.replaceAll('-', ''), command, workspaceRoot: security.root, workspaceIdentity: security.identity,
+        approvedReadOnlyPaths: command.readOnlyPaths, beforeCommit,
+      }, signal);
+      if (!taskSignal.aborted) signal.throwIfAborted();
+      return result;
+    } catch (error) {
+      if (!taskSignal.aborted) signal.throwIfAborted();
+      throw error;
+    } finally { delete active.shell; }
+  }
   private async run(task: AgentTask, active: ActiveTask, provider: AgentProvider, security: WorkspaceSecurity) {
     const timer = setTimeout(() => active.controller.abort(), 10 * 60_000); const signal = active.controller.signal;
     let checkpoint = 0;
@@ -202,6 +246,7 @@ export class AgentService implements AgentRuntime {
             const command = operation.kind === 'shell' ? operation.command : undefined;
             if (command) entry.command = command;
             const required = operation.kind === 'plan' ? [] : this.permissions.requiredPermissions(operation.tool, operation.paths);
+            let approvalId: string | undefined;
             if (operation.kind !== 'plan' && this.permissions.needsApproval(this.workspacePermissions(), required)) {
               const approval: Approval = {
                 id: randomUUID(), taskId: task.id, tool: operation.tool,
@@ -225,12 +270,13 @@ export class AgentService implements AgentRuntime {
               }
               // If approval was consumed just before a permission change, deny still wins.
               this.permissions.assertAllowed(this.workspacePermissions(), required);
+              approvalId = approval.id;
             }
             current();
             entry.status = 'running'; activity('working'); this.save();
             current();
             if (operation.kind === 'shell') {
-              const { stdout, stderr, exitCode } = await this.shell.execute(operation.command, signal);
+              const { stdout, stderr, exitCode } = await this.executeShell(active, security, entry.id, operation.command, required, approvalId);
               entry.result = JSON.stringify({ exitCode, stdout, stderr });
               current();
               entry.status = exitCode === 0 ? 'completed' : 'failed';

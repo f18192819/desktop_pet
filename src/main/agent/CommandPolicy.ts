@@ -3,6 +3,7 @@ import type { ShellCommand } from '../../shared/agent';
 import type { WorkspaceSecurity } from './WorkspaceSecurity';
 
 const aliases = new Set(['powershell', 'pwsh', 'cmd', 'python', 'python3', 'node', 'git', 'npm', 'pnpm', 'yarn', 'pip', 'uv']);
+export function isRuntimeAlias(value: unknown): value is string { return typeof value === 'string' && aliases.has(value); }
 const pathSchema = { type: 'string', minLength: 1, maxLength: 240 };
 
 export const shellParameters = {
@@ -23,7 +24,7 @@ export function commandOperation(input: ShellCommand, security: WorkspaceSecurit
   if (cwd.outsideWorkspace) throw new Error('命令工作目录必须在工作区内');
 
   const executable = input.executable.toLowerCase().replace(/\.exe$/, '');
-  if (!aliases.has(executable)) throw new Error('请使用受支持的内置运行时名称');
+  if (!isRuntimeAlias(executable)) throw new Error('请使用受支持的内置运行时名称');
 
   const paths = input.readOnlyPaths.map(path => {
     if (!isAbsolute(path)) throw new Error('外部只读路径必须是绝对路径');
