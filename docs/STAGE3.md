@@ -167,3 +167,61 @@ WorkspaceFS 的读、遍历、创建、补丁、复制、移动和删除全部�
 主进程在 JSON Schema 校验后解析实际路径，合并工具权限和外部读取权限。`copy_path` 还检查 `read_file`，工作区外的复制源再检查 `external_read`。任一检查为 `deny` 则拒绝，任一检查为 `ask` 则为本次操作生成一张审批卡。批准只适用于卡片上的路径和操作，执行前仍检查权限是否已改为禁止。无明确设置时，五种读取工具为 `allow`，七种修改工具及 `external_read` 为 `ask`。
 
 只有设置窗口能通过 IPC 更新单项权限，设置与工作面板接收同一工作区状态。`update_plan` 仅在内存中更新任务计划并随任务保存。Shell 和网络工具始终拒绝执行。工作区外写入不可审批，原生代理仍检查物理文件边界、目录身份与事务条件。
+
+## 3.3 Windows 命令安全
+
+### 威胁模型与候选后端
+
+模型生成的命令、工作区源码、项目配置、依赖、Git hooks 和启动的每个后代进程都可能执行不可信代码。安全边界需要保护宿主工作区外的内容和元数据、主程序凭据与 IPC、宿主系统配置及网络。命令可以在工作区内产生变更，应用只通过现有原生文件代理提交经过验证的结果。
+
+| 方案 | 判断 |
+| --- | --- |
+| AppContainer / LPAC + Job Object | LPAC 可以收紧 Token 权限，Job 可以管理后代和资源。宿主仍使用同一个内核和文件对象。要证明读访问只覆盖本次声明，还需验证已存在的 ACL、系统和用户的共享资源、注册表、IPC、网络和链接语义。运行时兼容性及授权任意本地文件都未验证。当前不采用。[Microsoft AppContainer 隔离](https://learn.microsoft.com/windows/win32/secauthz/appcontainer-isolation) · [Microsoft LPAC 启动](https://learn.microsoft.com/windows/win32/secauthz/implementing-an-appcontainer) |
+| Windows Sandbox + 映射目录 | 独立内核和只读映射有帮助。映射目录会暴露整棵目录树，读写映射还会把更改带回宿主。本机家庭版不支持 Windows Sandbox。当前不采用宿主工作区映射。[Microsoft Windows Sandbox](https://learn.microsoft.com/windows/security/threat-protection/windows-sandbox/windows-sandbox-overview) · [映射目录配置](https://learn.microsoft.com/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-configure-using-wsb-file) |
+| 专用 Windows 虚拟机 + 原生文件代理提交 | 首选待验证方案。独立来宾内核，宿主工作区和外部路径均不直接映射。来宾使用可弃的工作区副本和离线运行时，宿主文件最终只通过仍绑定工作区身份的原生代理变更。Hyper-V 是候选后端。本机家庭版无法安装完整 Hyper-V 角色。[Microsoft Hyper-V 安装要求](https://learn.microsoft.com/windows-server/virtualization/hyper-v/get-started/install-hyper-v) |
+
+候选设计需要在主进程检查 `shell` 和 `external_read`，逐项展示规范化后的外部绝对路径，并在单次批准后用原生句柄校验导出获准的文件。目录授权必须限定范围并按对象验证。外部数据只以只读副本交给来宾，未获准的宿主路径不可见。来宾输出按不可信数据处理，提交前再次绑定工作区身份并通过原生代理逐项核验。现有 3.1 代理用于文件工具，命令导入导出协议尚未实现。
+
+候选虚拟机须移除虚拟网卡、禁用共享目录、剪贴板、设备及无关集成通道，并验证来宾命令不能访问 IPv4、IPv6、DNS 和 loopback。移除虚拟网卡并不会禁用来宾自己的 loopback。还须用来宾内的受限身份和网络策略限制命令访问来宾注册表、服务及计划任务，验证所有子进程继承限制。宿主控制通道需要独立认证、限定消息和数据量。虚拟机与原生代理的边界不应依赖临时放宽宿主 ACL。
+
+### 已交付与测试环境
+
+- 工作区配置迁移到版本 3，每个已保存的工作区身份保留原有权限，新增 `shell: ask`。改为 `deny` 当场撤销依赖该权限的待审批，更新快照并关闭原 ID。其他权限或身份的审批仍有效。
+- `shell` 接受 `executable`、`args`、`cwd`、`readOnlyPaths` 和 `timeoutMs`。它检查结构、路径及权限，然后由未通过验收的启动入口直接拒绝。Shell 权限设置不会开启执行。界面仅显示请求和真实拒绝原因。终端流、命令超时处理、命令停止和来宾启动尚未接入。
+- 验证环境为 Windows 11 家庭版 x64 build 26300。原生测试夹具仅运行自身的固定子进程，先以挂起状态创建，再加入有内存及数量限制的 Job，最后恢复。测试覆盖已存在子进程的显式终止、关闭最后一个 Job 句柄的清理和禁止 breakaway。夹具只在 `npm test` 时构建，不进入 Electron 发布包。Job 只负责进程和资源管理。[Microsoft Job Objects](https://learn.microsoft.com/windows/win32/procthread/job-objects)
+- 本次 `npm run typecheck`、`npm run build` 和 `npm test` 均通过。自动测试 40 项通过、0 项跳过。运行桌宠后的人工验收仍待执行。
+
+### 原生安全验收记录
+
+下表逐项记录命令后端的结果。3.1 原生文件代理回归、权限测试和固定程序 Job 测试不能代替完整沙箱验收。旧 CLI 的失败仍然有效。
+
+| 编号 | 项目 | 实际结果 |
+| --- | --- | --- |
+| 1 | 工作区内创建、编辑、删除 | 命令后端未运行 |
+| 2 | 外部创建 | 命令后端未运行 |
+| 3 | 外部修改 | 命令后端未运行 |
+| 4 | 外部删除 | 候选后端未运行。旧 CLI 失败 |
+| 5 | 外部移动、重命名 | 命令后端未运行 |
+| 6 | 绝对路径外部写入 | 命令后端未运行 |
+| 7 | Symlink、Junction、Hardlink、未知 Reparse Point | 命令后端未运行 |
+| 8 | 未声明外部路径读取 | 命令后端未运行 |
+| 9 | 获准外部路径仅可读 | 命令后端未运行 |
+| 10 | PowerShell 外部写入 | 命令后端未运行 |
+| 11 | CMD 外部写入 | 命令后端未运行 |
+| 12 | Python 外部写入 | 命令后端未运行 |
+| 13 | Node.js 外部写入 | 命令后端未运行 |
+| 14 | Git hooks | 命令后端未运行 |
+| 15 | npm scripts | 命令后端未运行 |
+| 16 | Python subprocess、Node child_process 继承限制 | 命令后端未运行 |
+| 17 | 子进程不能 breakaway | 固定程序 Job 夹具验证，完整执行环境未运行 |
+| 18 | 取消终止整个进程树 | 固定程序 Job 夹具验证终止和等待，Agent 命令取消未接入 |
+| 19 | HKCU、HKLM 写入 | 命令后端未运行 |
+| 20 | 服务、计划任务 | 命令后端未运行 |
+| 21 | 启动项 | 命令后端未运行 |
+| 22 | Loopback HTTP | 候选后端未运行。旧 CLI 失败 |
+| 23 | IPv4、IPv6 | 命令后端未运行 |
+| 24 | DNS | 命令后端未运行 |
+| 25 | 主程序 API Key | 命令后端未运行 |
+| 26 | 主程序 IPC 和内部凭据文件 | 命令后端未运行 |
+
+运行 `npm ci`、`npm start` 打开桌宠，在设置选择专用测试工作区。把有待审批的文件工具设为禁止，可在工作面板检查卡片即时撤销。把 Shell 权限设为始终允许，工作面板仍须显示禁用。运行 `npm run typecheck`、`npm run build` 和 `npm test` 可复现类型、构建、权限和 Job 夹具检查。完成表中的实际命令测试前，启动入口保持禁用。

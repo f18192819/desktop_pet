@@ -6,11 +6,13 @@ const permissionLabels: Record<PermissionKey, string> = {
   list_directory: '列出目录', read_file: '读取文件', search_files: '搜索文件', find_files: '查找文件', stat_path: '查看文件信息',
   external_read: '工作区外读取', write_file: '创建或修改文件', apply_patch: '应用补丁', create_directory: '创建目录',
   copy_path: '复制文件或目录', move_path: '移动文件或目录', rename_path: '重命名文件或目录', delete_path: '删除文件或目录',
+  shell: 'Shell 命令',
 };
 const permissionModes: Record<PermissionMode, string> = { allow: '始终允许', ask: '每次询问', deny: '禁止' };
 const permissionGroups: { label: string; tools: readonly PermissionKey[] }[] = [
   { label: '文件读取', tools: [...READ_TOOLS, 'external_read'] },
   { label: '文件修改', tools: WRITE_TOOLS },
+  { label: '特殊工具', tools: ['shell'] },
 ];
 
 function useWorkspace() {
@@ -50,7 +52,7 @@ export function WorkspaceSettings() {
           </select>
         </label>)}
       </div>)}
-      <div><h3>特殊工具</h3><p>{value.shell.reason}</p><p>网络执行尚未实现，当前已禁用。</p></div>
+      <p>{value.shell.reason} 权限设置仅在合格沙箱内生效。</p><p>网络执行尚未实现，当前已禁用。</p>
     </section>}
     <p className="callout">获准读取的工作区外内容可能发送给当前模型服务商。请勿要求读取密码或密钥。</p>
     {(error || loadError || value?.issue) && <p role="alert">{error || loadError || value?.issue}</p>}</section>;
@@ -74,7 +76,7 @@ export function AgentWork() {
       {!task.rootIdentity && <p>此历史任务没有绑定工作区身份，只能查看。</p>}
       <h3>计划 / 执行进度</h3><pre>{task.plan || '等待模型制定计划'}</pre><p>已完成 {task.tools.filter(t => t.status === 'completed').length} / {task.tools.length} 次工具调用</p>
       {task.approvals.map(a => <div className="callout" key={a.id}>
-        <strong>{a.tool} · {a.status}</strong>
+        <strong>{a.tool} · {a.status === 'revoked' ? '已撤销（权限更新）' : a.status}</strong>
         {Array.isArray(a.paths) && a.paths.map((path, i, paths) => <div key={i}>
           <p>{path.access === 'read' ? '读取' : '修改'}{path.outsideWorkspace ? ' · 工作区外' : ' · 工作区内'}{paths.length > 1 ? (i === 0 ? ' · 源' : ' · 目标') : ''}</p>
           <pre>{path.path}</pre>
@@ -83,7 +85,11 @@ export function AgentWork() {
         {a.status === 'pending' && <><button onClick={() => void action(() => api.decideApproval({ id: a.id, approved: true }))}>仅允许本次</button><button onClick={() => void action(() => api.decideApproval({ id: a.id, approved: false }))}>拒绝</button></>}
       </div>)}
       <h3>模型回复 / 完成总结</h3><pre aria-live="polite">{task.output || '等待回复…'}</pre>{task.error && <p role="alert">{task.error}</p>}
-      <h3>工具及命令记录</h3>{task.tools.map(t => <details key={t.id}><summary>{t.name} · {t.status}</summary><pre>{t.arguments}</pre><pre>{t.result}</pre></details>)}
+      <h3>工具及命令记录</h3>{task.tools.map(t => <details key={t.id}><summary>{t.name} · {t.status}</summary>
+        {t.command ? <><p>{t.command.executable} · 超时 {t.command.timeoutMs} ms</p><pre>{JSON.stringify(t.command.args)}</pre>
+          <p>工作目录</p><pre>{t.command.cwd}</pre><p>工作区外只读路径</p><pre>{t.command.readOnlyPaths.join('\n') || '无'}</pre>
+        </> : <pre>{t.arguments}</pre>}
+        <pre>{t.result}</pre></details>)}
       <h3>文件修改 / Diff</h3>{task.changes.map((c, i) => <details key={i}><summary>{c.operation} · {c.path}</summary><pre>{`--- before\n${c.before}\n+++ after\n${c.after}`}</pre></details>)}
       <p>已报告 Token：{task.usage.reduce((n, u) => n + u.total, 0)}（{task.usage.length} 轮有报告；缺失用量未估算）</p>
     </>}{(error || state?.notice) && <p role="alert">{error || state?.notice}</p>}</section>;

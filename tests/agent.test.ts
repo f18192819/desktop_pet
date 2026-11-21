@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, linkSync, symlinkSync, existsSync, renameSync, readdirSync, statSync, openSync, closeSync } from 'node:fs';
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { resolve, join } from 'node:path';
+import { promisify } from 'node:util';
 import { WorkspaceSecurity } from '../src/main/agent/WorkspaceSecurity';
 import { runProxy, WorkspaceOperationInterrupted } from '../src/main/agent/NativeWorkspaceProxy';
 import { WorkspaceFS } from '../src/main/agent/WorkspaceFS';
 import { ToolAccumulator, AgentProvider } from '../src/main/agent/AgentProvider';
-import { validateTool } from '../src/main/agent/ToolRegistry';
+import { validateShellTool, validateTool } from '../src/main/agent/ToolRegistry';
 import { AgentService } from '../src/main/agent/AgentService';
 import { ShellExecutor } from '../src/main/agent/ShellExecutor';
 import { PermissionManager } from '../src/main/agent/PermissionManager';
@@ -331,7 +332,7 @@ function scriptedAgent(data: string) {
     return { content: '', calls: calls.splice(0) };
   } } as unknown as AgentProvider;
   const service = new AgentService(data, () => fake, () => {});
-  function start(batch: [string, Record<string, string>][]) {
+  function start(batch: [string, object][]) {
     calls = batch.map(([name, args], i) => ({ id: `call-${i}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }));
     return service.start('permission fixture');
   }
@@ -354,7 +355,8 @@ test('权限执行：工具独立、逐次询问、重复拒绝及特殊工具�
     await service.setWorkspace(root);
     const { identity } = service.workspaceState();
     service.setToolPermission('delete_path', 'deny', identity);
-    assert.throws(() => service.setToolPermission('shell', 'allow', identity), /无效/);
+    service.setToolPermission('shell', 'allow', identity);
+    assert.equal(service.workspaceState().shell.enabled, false);
     assert.throws(() => service.setToolPermission('request_network', 'allow', identity), /无效/);
     assert.throws(() => service.setToolPermission('read_file', { mode: 'allow' }, identity), /无效/);
     writeFileSync(join(root, 'input.txt'), 'input');
@@ -364,7 +366,8 @@ test('权限执行：工具独立、逐次询问、重复拒绝及特殊工具�
       ['write_file', { path: 'first.txt', content: 'approved' }],
       ['write_file', { path: 'second.txt', content: 'denied' }],
       ['delete_path', { path: 'input.txt' }], ['delete_path', { path: 'input.txt' }],
-      ['shell', { command: 'disabled' }], ['request_network', { reason: 'disabled' }],
+      ['shell', { executable: 'node', args: ['--version'], cwd: '.', readOnlyPaths: [], timeoutMs: 1000 }],
+      ['request_network', { reason: 'disabled' }],
     ]);
     const first = await agent.approval(0);
     assert.deepEqual(first.paths, [{ path: join(root, 'first.txt'), access: 'write', outsideWorkspace: false }]);
@@ -381,6 +384,7 @@ test('权限执行：工具独立、逐次询问、重复拒绝及特殊工具�
       task.tools[6].result, task.tools[7].result,
     ]);
     assert.match(task.tools[6].result!, /Shell 已禁用/);
+    assert.deepEqual(task.tools[6].command, { executable: 'node', args: ['--version'], cwd: root, readOnlyPaths: [], timeoutMs: 1000 });
     assert.match(task.tools[7].result!, /网络工具已禁用/);
     assert.deepEqual(task.approvals.map(item => item.status), ['approved', 'denied']);
     assert.equal(readFileSync(join(root, 'first.txt'), 'utf8'), 'approved');
@@ -440,9 +444,16 @@ test('权限执行：外部读取独立，复制检查源和目标，外部写�
     service.setToolPermission('copy_path', 'ask', identity);
     await agent.start([['copy_path', { path: source, destination: 'blocked.txt' }]]);
     const pending = await agent.approval(0);
-    service.setToolPermission('copy_path', 'deny', identity);
-    service.permissions.decide(pending.id, true);
-    assert.match((await agent.done()).tools[0].result!, /工具权限禁止：copy_path/);
+    service.setToolPermission('delete_path', 'deny', identity);
+    assert.equal(service.snapshot().tasks[0].approvals[0].status, 'pending');
+    const updates: string[] = [];
+    const unsubscribe = service.subscribe(() => { updates.push(service.snapshot().tasks[0].approvals[0].status); });
+    service.setToolPermission('external_read', 'deny', identity);
+    unsubscribe();
+    assert.deepEqual(updates, ['revoked']);
+    assert.equal(service.snapshot().tasks[0].approvals[0].status, 'revoked');
+    assert.throws(() => service.permissions.decide(pending.id, true), /审批已过期/);
+    assert.match((await agent.done()).tools[0].result!, /工作区外读取/);
     assert.ok(!existsSync(join(root, 'blocked.txt')));
   } finally { await service.dispose(); }
 });
@@ -461,18 +472,30 @@ test('权限配置：迁移旧开关、按身份恢复并安全处理损坏配�
     for (const tool of WRITE_TOOLS) assert.equal(permissions[tool], autoWrite && tool !== 'delete_path' ? 'allow' : 'ask');
     assert.equal(permissions.external_read, 'ask');
     const saved = JSON.parse(readFileSync(file, 'utf8'));
-    assert.equal(saved.version, 2);
+    assert.equal(saved.version, 3);
     assert.ok(!('autoWrite' in saved));
     assert.deepEqual(saved.permissionsByIdentity[identity], permissions);
     await migrated.dispose();
   }
+  const { identity: otherIdentity } = await WorkspaceSecurity.open(other);
+  const { shell: _shell, ...v2Defaults } = defaultPermissions();
+  writeFileSync(file, JSON.stringify({
+    version: 2, root, identity,
+    permissionsByIdentity: {
+      [identity]: { ...v2Defaults, write_file: 'allow', external_read: 'deny' },
+      [otherIdentity]: { ...v2Defaults, read_file: 'deny' },
+    },
+  }));
   const service = open();
   try {
+    assert.equal(service.workspaceState().permissions.shell, 'ask');
+    assert.equal(service.workspaceState().permissions.external_read, 'deny');
     await service.setWorkspace(other);
-    assert.deepEqual(service.workspaceState().permissions, defaultPermissions());
+    assert.deepEqual(service.workspaceState().permissions, { ...defaultPermissions(), read_file: 'deny' });
     assert.throws(() => service.setToolPermission('write_file', 'allow', identity), /工作区已变更/);
     await service.setWorkspace(root);
     assert.equal(service.workspaceState().permissions.write_file, 'allow');
+    service.setToolPermission('shell', 'allow', identity);
     service.setToolPermission('delete_path', 'deny', identity);
     await service.setWorkspace(root);
     assert.equal(service.workspaceState().permissions.delete_path, 'deny');
@@ -481,6 +504,8 @@ test('权限配置：迁移旧开关、按身份恢复并安全处理损坏配�
   const restarted = open();
   assert.equal(restarted.workspaceState().permissions.delete_path, 'deny');
   assert.equal(restarted.workspaceState().permissions.write_file, 'allow');
+  assert.equal(restarted.workspaceState().permissions.shell, 'allow');
+  assert.equal(restarted.workspaceState().shell.enabled, false);
   await restarted.dispose();
 
   saved.permissionsByIdentity[identity].read_file = 'invalid';
@@ -493,4 +518,64 @@ test('权限配置：迁移旧开关、按身份恢复并安全处理损坏配�
   assert.equal(corruptFile.workspaceState().valid, false);
   assert.deepEqual(corruptFile.workspaceState().permissions, defaultPermissions());
   await corruptFile.dispose();
+});
+
+test('撤销审批只影响匹配的工作区和权限', async () => {
+  const permissions = new PermissionManager();
+  const controller = new AbortController();
+  const requests = [
+    permissions.request({ id: '1', taskId: 'a', tool: 'copy_path', description: '', scope: [] }, controller.signal,
+      { identity: 'A', keys: ['copy_path', 'external_read'] }),
+    permissions.request({ id: '2', taskId: 'b', tool: 'copy_path', description: '', scope: [] }, controller.signal,
+      { identity: 'B', keys: ['copy_path', 'external_read'] }),
+    permissions.request({ id: '3', taskId: 'a', tool: 'delete_path', description: '', scope: [] }, controller.signal,
+      { identity: 'A', keys: ['delete_path'] }),
+  ];
+  assert.deepEqual(permissions.revokePermission('A', 'external_read'), ['1']);
+  assert.throws(() => permissions.decide('1', true), /审批已过期/);
+  permissions.decide('2', true);
+  permissions.decide('3', true);
+  assert.deepEqual(await Promise.all(requests), ['denied', 'approved', 'approved']);
+});
+
+test('结构化命令校验工作目录和外部读取权限，沙箱未认证时从不启动', async () => {
+  const { dir, root } = fixture();
+  const agent = scriptedAgent(join(dir, 'data'));
+  const { service } = agent;
+  const command = { executable: 'git', args: ['status', '--short'], cwd: '.', readOnlyPaths: [], timeoutMs: 3000 };
+  assert.throws(() => validateShellTool(JSON.stringify({ ...command, shell: true })), /JSON Schema/);
+  assert.throws(() => validateShellTool(JSON.stringify({ ...command, args: [String.fromCharCode(0)] })), /JSON Schema/);
+  assert.throws(() => validateShellTool(JSON.stringify({ ...command, timeoutMs: -1 })), /JSON Schema/);
+  try {
+    await service.setWorkspace(root);
+    const { identity } = service.workspaceState();
+    service.setToolPermission('external_read', 'deny', identity);
+    await agent.start([
+      ['shell', { ...command, cwd: '..' }],
+      ['shell', { ...command, readOnlyPaths: ['../external.txt'] }],
+      ['shell', { ...command, readOnlyPaths: [join(dir, 'external.txt')] }],
+      ['shell', command],
+    ]);
+    const task = await agent.done();
+    assert.deepEqual(task.tools.map(tool => tool.status), ['failed', 'failed', 'failed', 'failed']);
+    assert.match(task.tools[0].result!, /工作目录必须在工作区内/);
+    assert.match(task.tools[1].result!, /必须是绝对路径/);
+    assert.match(task.tools[2].result!, /工具权限禁止：工作区外读取/);
+    assert.match(task.tools[3].result!, /Shell 已禁用/);
+    assert.equal(task.approvals.length, 0);
+    service.setToolPermission('shell', 'deny', identity);
+    await agent.start([['shell', command]]);
+    assert.match((await agent.done()).tools[0].result!, /工具权限禁止：shell/);
+  } finally { await service.dispose(); }
+});
+
+test('Windows 原生 Job 夹具：终止进程树、关闭即清理、禁止 breakaway', async () => {
+  const { root } = fixture();
+  for (const mode of ['terminate', 'close', 'breakaway']) {
+    const { stdout } = await promisify(execFile)(resolve('.test-build/JobProcess.Tests.exe'), [mode, join(root, mode)], {
+      windowsHide: true, timeout: 20_000, maxBuffer: 64 * 1024,
+      env: { ...env, EMMA_TEST_PARENT_SECRET: 'fixture-only' },
+    });
+    assert.equal(stdout.trim(), `${mode}: PASS`);
+  }
 });

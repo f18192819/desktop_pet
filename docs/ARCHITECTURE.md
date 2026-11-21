@@ -52,4 +52,14 @@ ChatService 经既有 handleActivityEvent({source:'chat',taskId,activity}) 驱�
 
 文件工具通过独立的 Windows x64 代理执行。代理以目录句柄和文件身份约束路径，覆盖、复制和递归删除通过 NTFS 事务提交。事务不可用时拒绝相关操作。机制、兼容性和实测范围见 [STAGE3](STAGE3.md#31-原生文件代理2026-11-20)。
 
-ShellExecutor 保持禁用。CLI 0.128.0 实测允许删除外部夹具和访问 loopback，审批无法启用 Shell。ChatGPT 登录、SIWC/OAuth、Codex App Server、MCP、浏览器自动化、SQLite、长期偏好、提醒和后台任务不在本阶段。
+ChatGPT 登录、SIWC/OAuth、Codex App Server、MCP、浏览器自动化、SQLite、长期偏好、提醒和后台任务不在本阶段。
+
+## 3.3 Windows 命令安全
+
+`ToolRegistry` 使用 JSON Schema 验证结构化命令。`CommandPolicy` 使用 `WorkspaceSecurity` 规范化工作目录、程序路径及外部只读声明。该步骤是主进程的权限预检。真正使用这些路径前还需要原生校验和安全导入。命令检查当前工作区的 `shell` 权限。有外部只读路径时同时检查 `external_read`，任意一项为禁止则拒绝。
+
+`ShellExecutor` 的唯一启动入口是 `SandboxLauncher`。当前入口无条件拒绝，设置及审批无法激活命令执行。工作面板会保存已规范化的命令请求和失败原因，未启动的命令不产生退出码和终端输出。网络始终拒绝。已有 CLI 0.128.0 后端在外部删除和 loopback 检查中失败。
+
+`workspace.json` 版本 3 为各工作区保留原有工具权限并添加默认 `ask` 的 `shell`。待审批在主进程内绑定目录身份和全部所需权限。配置保存成功后，改为 `deny` 的权限立即使匹配的审批 ID 失效，同步更新 AgentSnapshot。文件操作仍走原生工作区代理。
+
+候选后端使用独立 Windows 虚拟机分隔宿主文件和凭据。命令只接触经过验证的工作区副本、受控运行时及本次授权的只读副本。宿主文件变更只能经工作区原生代理提交。Job Object 测试验证进程生命周期，完整的虚拟机执行、文件交换、网络和凭据隔离仍待实现和验收。详见 [3.3 交付记录](STAGE3.md#33-windows-命令安全)。

@@ -9,9 +9,10 @@ import { isWorkspaceIdentity, WorkspaceSecurity } from './WorkspaceSecurity';
 import { WorkspaceOperationInterrupted } from './NativeWorkspaceProxy';
 import { WorkspaceFS } from './WorkspaceFS';
 import { ShellExecutor } from './ShellExecutor';
+import { commandOperation } from './CommandPolicy';
 import { PermissionManager } from './PermissionManager';
-import { fileOperation, validateTool } from './ToolRegistry';
-import { defaultPermissions, isPermissionKey, isPermissionMode, loadWorkspaceConfig } from './WorkspaceConfig';
+import { fileOperation, validateShellTool, validateTool } from './ToolRegistry';
+import { defaultPermissions, isPermissionKey, isPermissionMode, loadWorkspaceConfig, WORKSPACE_CONFIG_VERSION } from './WorkspaceConfig';
 import type { WorkspaceConfig } from './WorkspaceConfig';
 import type { AgentRuntime } from '../integrations/contracts';
 
@@ -20,6 +21,7 @@ type ActiveTask = { id: string; controller: AbortController; done: Promise<void>
 export class AgentService implements AgentRuntime {
   readonly store: AgentSessionStore;
   readonly permissions = new PermissionManager();
+  private readonly shell = new ShellExecutor();
   private workspace: WorkspaceConfig;
   private workspaceValid = false;
   private workspaceIssue: string | null = null;
@@ -49,7 +51,7 @@ export class AgentService implements AgentRuntime {
   private save() { this.store.save(); this.changed(); }
   workspaceState(): WorkspaceState {
     const { root, identity } = this.workspace;
-    return { root, identity, permissions: { ...this.workspacePermissions() }, valid: this.workspaceValid, issue: this.workspaceIssue, shell: new ShellExecutor().status };
+    return { root, identity, permissions: { ...this.workspacePermissions() }, valid: this.workspaceValid, issue: this.workspaceIssue, shell: this.shell.status };
   }
   private workspacePermissions() {
     const { identity, permissionsByIdentity } = this.workspace;
@@ -99,7 +101,7 @@ export class AgentService implements AgentRuntime {
       if (security.contains(security.root, this.dir)) throw new Error('工作区不能包含应用数据目录');
       const profiles = this.workspace.permissionsByIdentity;
       this.saveWorkspace({
-        version: 2, root: security.root, identity: security.identity,
+        version: WORKSPACE_CONFIG_VERSION, root: security.root, identity: security.identity,
         permissionsByIdentity: { ...profiles, [security.identity]: profiles[security.identity] ?? defaultPermissions() },
       });
       this.workspaceValid = true;
@@ -117,7 +119,19 @@ export class AgentService implements AgentRuntime {
       ...this.workspace,
       permissionsByIdentity: { ...this.workspace.permissionsByIdentity, [expectedIdentity]: permissions },
     });
-    this.workspaceChanged();
+    try {
+      if (mode === 'deny') {
+        const revoked = this.permissions.revokePermission(expectedIdentity, tool);
+        const task = this.store.tasks.find(task => task.id === this.active?.id && task.rootIdentity === expectedIdentity);
+        if (task && revoked.length) {
+          for (const approval of task.approvals) {
+            if (approval.status === 'pending' && revoked.includes(approval.id)) approval.status = 'revoked';
+          }
+          if (task.status === 'waitingApproval') task.status = 'running';
+          try { this.store.save(); } finally { this.changed(); }
+        }
+      }
+    } finally { this.workspaceChanged(); }
   }
   private saveWorkspace(binding: WorkspaceConfig) {
     atomicWrite(join(this.dir, 'workspace.json'), JSON.stringify(binding));
@@ -185,22 +199,33 @@ export class AgentService implements AgentRuntime {
           current(); const record = { id: randomUUID(), name: call.function.name, arguments: call.function.arguments, status: 'pending' as const };
           task.tools.push(record); this.save(); const entry = task.tools[task.tools.length - 1];
           try {
+            if (entry.name === 'shell') {
+              const { command, paths } = commandOperation(validateShellTool(entry.arguments), security);
+              entry.command = command;
+              this.permissions.needsApproval(this.workspacePermissions(), this.permissions.requiredPermissions('shell', paths));
+              this.shell.execute();
+            }
             const args = validateTool(entry.name, entry.arguments);
-            if (entry.name === 'shell') new ShellExecutor().execute();
             if (entry.name === 'request_network') throw new Error('网络工具已禁用：当前未实现网络执行');
             const operation = entry.name === 'update_plan' ? null : fileOperation(entry.name, args, security);
-            if (operation && this.permissions.needsApproval(this.workspacePermissions(), operation.tool, operation.paths)) {
+            const required = operation ? this.permissions.requiredPermissions(operation.tool, operation.paths) : [];
+            if (operation && this.permissions.needsApproval(this.workspacePermissions(), required)) {
               const approval: Approval = {
                 id: randomUUID(), taskId: task.id, tool: operation.tool,
                 description: operation.description, scope: operation.paths.map(path => path.path),
                 paths: operation.paths, status: 'pending',
               };
+              const pending = this.permissions.request(approval, signal, { identity: security.identity, keys: required });
               task.approvals.push(approval); task.status = 'waitingApproval'; activity('waitingApproval'); this.save();
-              const decision = await this.permissions.request(approval, signal); current();
+              const decision = await pending; current();
+              if (approval.status === 'revoked') {
+                this.permissions.needsApproval(this.workspacePermissions(), required);
+                throw new Error('本次审批已因权限更新而撤销，请调整方案');
+              }
               approval.status = decision; task.status = 'running'; this.save();
               if (decision !== 'approved') throw new Error('用户拒绝本次操作，请调整方案');
               // A settings change while waiting may have denied this specific operation.
-              this.permissions.needsApproval(this.workspacePermissions(), operation.tool, operation.paths);
+              this.permissions.needsApproval(this.workspacePermissions(), required);
             }
             current(); entry.status = 'running'; activity('working'); this.save();
             let output: unknown;
@@ -226,6 +251,7 @@ export class AgentService implements AgentRuntime {
       }
     } finally {
       clearTimeout(timer);
+      this.permissions.revokeTask(task.id);
       for (const approval of task.approvals) if (approval.status === 'pending') approval.status = 'denied';
       for (const t of task.tools) if (t.status === 'pending' || t.status === 'running') t.status = 'interrupted';
       if (this.active === active) this.active = null;

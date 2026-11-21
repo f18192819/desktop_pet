@@ -5,8 +5,9 @@ import { readJSON } from '../chat/storage';
 import { isRecord } from '../config';
 import { isWorkspaceIdentity } from './WorkspaceSecurity';
 
+export const WORKSPACE_CONFIG_VERSION = 3;
 export interface WorkspaceConfig {
-  version: 2;
+  version: typeof WORKSPACE_CONFIG_VERSION;
   root: string | null;
   identity: string | null;
   permissionsByIdentity: Record<string, ToolPermissions>;
@@ -24,17 +25,24 @@ export function defaultPermissions(): ToolPermissions {
   return {
     list_directory: 'allow', read_file: 'allow', search_files: 'allow', find_files: 'allow', stat_path: 'allow',
     external_read: 'ask', write_file: 'ask', apply_patch: 'ask', create_directory: 'ask',
-    copy_path: 'ask', move_path: 'ask', rename_path: 'ask', delete_path: 'ask',
+    copy_path: 'ask', move_path: 'ask', rename_path: 'ask', delete_path: 'ask', shell: 'ask',
   };
 }
 
-function isPermissions(value: unknown): value is ToolPermissions {
-  return isRecord(value) && Object.keys(value).length === PERMISSION_KEYS.length
-    && PERMISSION_KEYS.every(key => Object.hasOwn(value, key) && isPermissionMode(value[key]));
+function parsePermissions(value: unknown, legacy: boolean): ToolPermissions | undefined {
+  const required = legacy ? PERMISSION_KEYS.filter(key => key !== 'shell') : PERMISSION_KEYS;
+  if (!isRecord(value) || Object.keys(value).length !== required.length) return;
+  const permissions = defaultPermissions();
+  for (const key of required) {
+    const mode = value[key];
+    if (!Object.hasOwn(value, key) || !isPermissionMode(mode)) return;
+    permissions[key] = mode;
+  }
+  return permissions;
 }
 
 export function loadWorkspaceConfig(file: string): { config: WorkspaceConfig; migrated: boolean } {
-  const config: WorkspaceConfig = { version: 2, root: null, identity: null, permissionsByIdentity: {} };
+  const config: WorkspaceConfig = { version: WORKSPACE_CONFIG_VERSION, root: null, identity: null, permissionsByIdentity: {} };
   let data: unknown;
   try { data = readJSON(file); } catch { return { config, migrated: false }; }
   if (!isRecord(data)) return { config, migrated: false };
@@ -44,19 +52,20 @@ export function loadWorkspaceConfig(file: string): { config: WorkspaceConfig; mi
   }
 
   // A legacy setting without a recorded identity cannot authorize a directory selected later.
-  const migrated = !Object.hasOwn(data, 'version') && config.root !== null && typeof data.autoWrite === 'boolean';
-  if (migrated && config.identity) {
+  const legacySwitch = !Object.hasOwn(data, 'version') && config.root !== null && typeof data.autoWrite === 'boolean';
+  const legacyProfiles = data.version === 2;
+  if (legacySwitch && config.identity) {
     const permissions = defaultPermissions();
     if (data.autoWrite === true) {
       for (const tool of WRITE_TOOLS) if (tool !== 'delete_path') permissions[tool] = 'allow';
     }
     config.permissionsByIdentity[config.identity] = permissions;
-  } else if (data.version === 2 && isRecord(data.permissionsByIdentity)) {
-    for (const [identity, permissions] of Object.entries(data.permissionsByIdentity)) {
-      if (isWorkspaceIdentity(identity) && isPermissions(permissions)) {
-        config.permissionsByIdentity[identity] = permissions;
-      }
+  } else if ((legacyProfiles || data.version === WORKSPACE_CONFIG_VERSION) && isRecord(data.permissionsByIdentity)) {
+    for (const [identity, raw] of Object.entries(data.permissionsByIdentity)) {
+      if (!isWorkspaceIdentity(identity)) continue;
+      const permissions = parsePermissions(raw, legacyProfiles);
+      if (permissions) config.permissionsByIdentity[identity] = permissions;
     }
   }
-  return { config, migrated };
+  return { config, migrated: legacySwitch || legacyProfiles };
 }
