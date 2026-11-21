@@ -9,9 +9,8 @@ import { isWorkspaceIdentity, WorkspaceSecurity } from './WorkspaceSecurity';
 import { WorkspaceOperationInterrupted } from './NativeWorkspaceProxy';
 import { WorkspaceFS } from './WorkspaceFS';
 import { ShellExecutor } from './ShellExecutor';
-import { commandOperation } from './CommandPolicy';
 import { PermissionManager } from './PermissionManager';
-import { fileOperation, validateShellTool, validateTool } from './ToolRegistry';
+import { prepareTool } from './ToolRegistry';
 import { defaultPermissions, isPermissionKey, isPermissionMode, loadWorkspaceConfig, WORKSPACE_CONFIG_VERSION } from './WorkspaceConfig';
 import type { WorkspaceConfig } from './WorkspaceConfig';
 import type { AgentRuntime } from '../integrations/contracts';
@@ -199,38 +198,43 @@ export class AgentService implements AgentRuntime {
           current(); const record = { id: randomUUID(), name: call.function.name, arguments: call.function.arguments, status: 'pending' as const };
           task.tools.push(record); this.save(); const entry = task.tools[task.tools.length - 1];
           try {
-            if (entry.name === 'shell') {
-              const { command, paths } = commandOperation(validateShellTool(entry.arguments), security);
-              entry.command = command;
-              this.permissions.needsApproval(this.workspacePermissions(), this.permissions.requiredPermissions('shell', paths));
-              this.shell.execute();
-            }
-            const args = validateTool(entry.name, entry.arguments);
-            if (entry.name === 'request_network') throw new Error('网络工具已禁用：当前未实现网络执行');
-            const operation = entry.name === 'update_plan' ? null : fileOperation(entry.name, args, security);
-            const required = operation ? this.permissions.requiredPermissions(operation.tool, operation.paths) : [];
-            if (operation && this.permissions.needsApproval(this.workspacePermissions(), required)) {
+            const operation = prepareTool(entry.name, entry.arguments, security);
+            const command = operation.kind === 'shell' ? operation.command : undefined;
+            if (command) entry.command = command;
+            const required = operation.kind === 'plan' ? [] : this.permissions.requiredPermissions(operation.tool, operation.paths);
+            if (operation.kind !== 'plan' && this.permissions.needsApproval(this.workspacePermissions(), required)) {
               const approval: Approval = {
                 id: randomUUID(), taskId: task.id, tool: operation.tool,
-                description: operation.description, scope: operation.paths.map(path => path.path),
+                description: operation.description,
+                scope: command ? [command.cwd, ...command.readOnlyPaths] : operation.paths.map(path => path.path),
+                workspaceIdentity: security.identity, requiredPermissions: required,
+                ...(command && { command }),
                 paths: operation.paths, status: 'pending',
               };
               const pending = this.permissions.request(approval, signal, { identity: security.identity, keys: required });
               task.approvals.push(approval); task.status = 'waitingApproval'; activity('waitingApproval'); this.save();
               const decision = await pending; current();
               if (approval.status === 'revoked') {
-                this.permissions.needsApproval(this.workspacePermissions(), required);
+                this.permissions.assertAllowed(this.workspacePermissions(), required);
                 throw new Error('本次审批已因权限更新而撤销，请调整方案');
               }
               approval.status = decision; task.status = 'running'; this.save();
               if (decision !== 'approved') throw new Error('用户拒绝本次操作，请调整方案');
-              // A settings change while waiting may have denied this specific operation.
-              this.permissions.needsApproval(this.workspacePermissions(), required);
+              if (!this.workspaceValid || this.workspace.identity !== security.identity || this.workspace.root !== security.root) {
+                throw new Error('审批绑定的工作区已变更');
+              }
+              // If approval was consumed just before a permission change, deny still wins.
+              this.permissions.assertAllowed(this.workspacePermissions(), required);
             }
-            current(); entry.status = 'running'; activity('working'); this.save();
+            current();
             let output: unknown;
-            if (operation) output = await fs.execute(operation.tool, operation.args, signal);
-            else { task.plan = args.plan; output = '计划已更新'; }
+            if (operation.kind === 'shell') {
+              output = this.shell.execute(operation.command, signal);
+            } else {
+              entry.status = 'running'; activity('working'); this.save();
+              if (operation.kind === 'file') output = await fs.execute(operation.tool, operation.args, signal);
+              else { task.plan = operation.plan; output = '计划已更新'; }
+            }
             entry.result = typeof output === 'string' ? output : JSON.stringify(output); entry.status = 'completed';
           } catch (error) {
             entry.result = error instanceof Error ? error.message : '工具执行失败';

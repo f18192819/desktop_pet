@@ -1,7 +1,7 @@
 import Ajv from 'ajv';
 import { READ_TOOLS, WRITE_TOOLS } from '../../shared/agent';
 import type { FileTool, ShellCommand } from '../../shared/agent';
-import { shellParameters } from './CommandPolicy';
+import { commandOperation, shellParameters } from './CommandPolicy';
 import type { WorkspaceSecurity } from './WorkspaceSecurity';
 const definitions: Record<string, string[]> = {
   list_directory: ['path'], read_file: ['path'], search_files: ['path', 'query'], find_files: ['path', 'query'],
@@ -60,4 +60,17 @@ export function fileOperation(name: string, args: Record<string, string>, securi
   }
   const description = impacts[tool] + (paths.some(path => path.outsideWorkspace) ? '读取结果可能发送给当前模型服务商。' : '');
   return { tool, args: normalized, paths, description };
+}
+
+export function prepareTool(name: string, json: string, security: WorkspaceSecurity) {
+  if (name === 'shell') return {
+    kind: 'shell' as const,
+    tool: 'shell' as const,
+    description: '仅授权这次命令和列出的外部只读路径。执行需要通过安全验收的沙箱。',
+    ...commandOperation(validateShellTool(json), security),
+  };
+  const args = validateTool(name, json);
+  if (name === 'request_network') throw new Error('网络工具已禁用：当前未实现网络执行');
+  if (name === 'update_plan') return { kind: 'plan' as const, plan: args.plan };
+  return { kind: 'file' as const, ...fileOperation(name, args, security) };
 }

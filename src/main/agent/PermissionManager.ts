@@ -13,10 +13,14 @@ export class PermissionManager implements Contract {
     return required;
   }
 
-  needsApproval(permissions: ToolPermissions, required: readonly PermissionKey[]): boolean {
-    // Deny takes precedence over ask, so a blocked operation never reaches approval.
+  assertAllowed(permissions: ToolPermissions, required: readonly PermissionKey[]) {
     const denied = required.find(key => permissions[key] !== 'allow' && permissions[key] !== 'ask');
     if (denied) throw new Error(`工具权限禁止：${denied === 'external_read' ? '工作区外读取' : denied}`);
+  }
+
+  needsApproval(permissions: ToolPermissions, required: readonly PermissionKey[]): boolean {
+    // Deny takes precedence over ask, so a blocked operation never reaches approval.
+    this.assertAllowed(permissions, required);
     return required.some(key => permissions[key] === 'ask');
   }
   request(request: PermissionRequest, signal: AbortSignal, scope?: PermissionScope): Promise<Decision> {

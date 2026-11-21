@@ -14,6 +14,7 @@ static class JobProcessTests {
     const uint Suspended = 0x4, UnicodeEnvironment = 0x400, NoWindow = 0x08000000, Breakaway = 0x01000000;
     const uint LimitProcesses = 0x8, LimitProcessMemory = 0x100, LimitJobMemory = 0x200, KillOnClose = 0x2000;
     const uint AccessDenied = 5, Sync = 0x00100000;
+    const uint WaitTimeout = 0x102;
     static readonly string Executable = Assembly.GetExecutingAssembly().Location;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -140,7 +141,8 @@ static class JobProcessTests {
                     Require(File.ReadAllText(report) == "denied" && WaitForSingleObject(root, 5000) == 0, "Breakaway test did not finish");
                 } else {
                     using (var leaf = OpenProcess(Sync, false, uint.Parse(File.ReadAllText(report)))) {
-                        Require(!leaf.IsInvalid && WaitForSingleObject(leaf, 0) == 0x102, "Job child is not running");
+                        Require(!leaf.IsInvalid && WaitForSingleObject(leaf, 0) == WaitTimeout, "Job child is not running");
+                        if (mode == "timeout") Require(WaitForSingleObject(root, 100) == WaitTimeout, "Fixture did not reach its execution timeout");
                         if (mode == "close") job.Dispose();
                         else if (!TerminateJobObject(job, 1)) throw Failure("TerminateJobObject");
                         Require(WaitForSingleObject(root, 5000) == 0 && WaitForSingleObject(leaf, 5000) == 0, "Process tree survived stop");
@@ -161,6 +163,7 @@ static class JobProcessTests {
                 case "terminate":
                 case "close":
                 case "breakaway":
+                case "timeout":
                     Run(args[0], report);
                     Console.WriteLine(args[0] + ": PASS");
                     break;

@@ -220,7 +220,12 @@ test('AgentProvider SSE 字节分片、usage、required 不支持和截断', asy
 });
 test('一次性审批、取消和 Shell fail closed', async () => {
   const p = new PermissionManager(); const c = new AbortController(); const result = p.request({ id: 'a', taskId: 't', tool: 'delete', description: '', scope: [] }, c.signal); p.decide('a', true); assert.equal(await result, 'approved'); assert.throws(() => p.decide('a', true));
-  const cancelled = p.request({ id: 'b', taskId: 't', tool: 'delete', description: '', scope: [] }, c.signal); c.abort(); assert.equal(await cancelled, 'denied'); assert.throws(() => new ShellExecutor().execute(), /Shell 已禁用/);
+  const cancelled = p.request({ id: 'b', taskId: 't', tool: 'delete', description: '', scope: [] }, c.signal);
+  c.abort();
+  assert.equal(await cancelled, 'denied');
+  const command = { executable: 'git', args: ['status'], cwd: '.', readOnlyPaths: [], timeoutMs: 1000 };
+  assert.throws(() => new ShellExecutor().execute(command, new AbortController().signal), /Shell 已禁用/);
+  assert.throws(() => new ShellExecutor().execute(command, c.signal), { name: 'AbortError' });
 });
 test('Agent 持久化先于执行、审批取消、恢复不重放 pending 写入', async () => {
   const { dir, root } = fixture(); const data = join(dir, 'data');
@@ -549,19 +554,22 @@ test('结构化命令校验工作目录和外部读取权限，沙箱未认证�
   try {
     await service.setWorkspace(root);
     const { identity } = service.workspaceState();
+    service.setToolPermission('shell', 'allow', identity);
     service.setToolPermission('external_read', 'deny', identity);
     await agent.start([
       ['shell', { ...command, cwd: '..' }],
       ['shell', { ...command, readOnlyPaths: ['../external.txt'] }],
       ['shell', { ...command, readOnlyPaths: [join(dir, 'external.txt')] }],
       ['shell', command],
+      ['shell', { ...command, executable: join(root, 'git.exe') }],
     ]);
     const task = await agent.done();
-    assert.deepEqual(task.tools.map(tool => tool.status), ['failed', 'failed', 'failed', 'failed']);
+    assert.deepEqual(task.tools.map(tool => tool.status), ['failed', 'failed', 'failed', 'failed', 'failed']);
     assert.match(task.tools[0].result!, /工作目录必须在工作区内/);
     assert.match(task.tools[1].result!, /必须是绝对路径/);
     assert.match(task.tools[2].result!, /工具权限禁止：工作区外读取/);
     assert.match(task.tools[3].result!, /Shell 已禁用/);
+    assert.match(task.tools[4].result!, /内置运行时名称/);
     assert.equal(task.approvals.length, 0);
     service.setToolPermission('shell', 'deny', identity);
     await agent.start([['shell', command]]);
@@ -569,9 +577,90 @@ test('结构化命令校验工作目录和外部读取权限，沙箱未认证�
   } finally { await service.dispose(); }
 });
 
-test('Windows 原生 Job 夹具：终止进程树、关闭即清理、禁止 breakaway', async () => {
+test('Shell 审批：按次绑定命令和权限，批准后真实启动门禁仍拒绝执行', async () => {
+  const { dir, root } = fixture();
+  const cmd = { executable: 'git', args: ['status', '--short'], cwd: '.', readOnlyPaths: [], timeoutMs: 500 };
+  const agent = scriptedAgent(join(dir, 'data'));
+  const { service } = agent;
+  const sentinel = join(dir, 'sentinel.txt');
+  writeFileSync(sentinel, 'external data');
+  const bytes = readFileSync(sentinel);
+  const before = statSync(sentinel, { bigint: true });
+  try {
+    await service.setWorkspace(root);
+    const { identity } = service.workspaceState();
+    await agent.start([['shell', cmd], ['shell', cmd]]);
+    const first = await agent.approval(0);
+    assert.deepEqual(first.command, { ...cmd, cwd: root });
+    assert.deepEqual(first.scope, [root]);
+    assert.equal(first.workspaceIdentity, identity);
+    assert.deepEqual(first.requiredPermissions, ['shell']);
+    service.permissions.decide(first.id, true);
+    const next = await agent.approval(1);
+    assert.notEqual(first.id, next.id);
+    assert.throws(() => service.permissions.decide(first.id, true), /审批已过期/);
+    service.permissions.decide(next.id, false);
+    const task = await agent.done();
+    assert.equal(task.tools[0].status, 'failed');
+    assert.match(task.tools[0].result!, /Shell 已禁用/);
+    assert.match(task.tools[1].result!, /用户拒绝/);
+
+    service.setToolPermission('shell', 'allow', identity);
+    const external = { ...cmd, readOnlyPaths: [sentinel] };
+    await agent.start([['shell', external]]);
+    const approval = await agent.approval(0);
+    assert.deepEqual(approval.command, { ...external, cwd: root });
+    assert.deepEqual(approval.scope, [root, sentinel]);
+    assert.deepEqual(approval.requiredPermissions, ['shell', 'external_read']);
+    service.permissions.decide(approval.id, true);
+    assert.match((await agent.done()).tools[0].result!, /Shell 已禁用/);
+
+    await agent.start([['shell', external]]);
+    const racing = await agent.approval(0);
+    service.permissions.decide(racing.id, true);
+    // The ID was consumed before the policy changed. The post-approval check still rejects.
+    service.setToolPermission('external_read', 'deny', identity);
+    assert.match((await agent.done()).tools[0].result!, /工具权限禁止：工作区外读取/);
+    const after = statSync(sentinel, { bigint: true });
+    assert.deepEqual([after.ino, after.nlink, after.size, after.birthtimeNs, after.mtimeNs, after.ctimeNs],
+      [before.ino, before.nlink, before.size, before.birthtimeNs, before.mtimeNs, before.ctimeNs]);
+    assert.deepEqual(readFileSync(sentinel), bytes);
+    assert.equal(service.workspaceState().shell.enabled, false);
+  } finally { await service.dispose(); }
+});
+
+test('Shell 审批：权限变更立即撤销，取消任务使原审批失效', async () => {
+  const { dir, root } = fixture();
+  const agent = scriptedAgent(join(dir, 'data'));
+  const { service } = agent;
+  const command = { executable: 'node', args: ['--version'], cwd: '.', readOnlyPaths: [join(dir, 'external.txt')], timeoutMs: 1000 };
+  try {
+    await service.setWorkspace(root);
+    const { identity } = service.workspaceState();
+    for (const key of ['shell', 'external_read'] as const) {
+      await agent.start([['shell', command]]);
+      const approval = await agent.approval(0);
+      service.setToolPermission(key, 'deny', identity);
+      assert.equal(service.snapshot().tasks[0].approvals[0].status, 'revoked');
+      assert.throws(() => service.permissions.decide(approval.id, true), /审批已过期/);
+      assert.equal((await agent.done()).tools[0].status, 'failed');
+      service.setToolPermission(key, 'ask', identity);
+    }
+    const id = await agent.start([['shell', command]]);
+    const pending = await agent.approval(0);
+    const stopped = service.cancel(id);
+    assert.throws(() => service.permissions.decide(pending.id, true), /审批已过期/);
+    await stopped;
+    const task = await agent.done();
+    assert.equal(task.status, 'cancelled');
+    assert.notEqual(task.approvals[0].status, 'pending');
+    assert.equal(task.tools[0].status, 'interrupted');
+  } finally { await service.dispose(); }
+});
+
+test('Windows 原生 Job 夹具：终止进程树、超时清理、关闭即清理、禁止 breakaway', async () => {
   const { root } = fixture();
-  for (const mode of ['terminate', 'close', 'breakaway']) {
+  for (const mode of ['terminate', 'timeout', 'close', 'breakaway']) {
     const { stdout } = await promisify(execFile)(resolve('.test-build/JobProcess.Tests.exe'), [mode, join(root, mode)], {
       windowsHide: true, timeout: 20_000, maxBuffer: 64 * 1024,
       env: { ...env, EMMA_TEST_PARENT_SECRET: 'fixture-only' },

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { READ_TOOLS, WRITE_TOOLS } from '../shared/agent';
-import type { AgentSnapshot, PermissionKey, PermissionMode, WorkspaceState } from '../shared/agent';
+import type { AgentSnapshot, PermissionKey, PermissionMode, ShellCommand, WorkspaceState } from '../shared/agent';
 const api = window.desktopPet;
 const permissionLabels: Record<PermissionKey, string> = {
   list_directory: '列出目录', read_file: '读取文件', search_files: '搜索文件', find_files: '查找文件', stat_path: '查看文件信息',
@@ -14,6 +14,14 @@ const permissionGroups: { label: string; tools: readonly PermissionKey[] }[] = [
   { label: '文件修改', tools: WRITE_TOOLS },
   { label: '特殊工具', tools: ['shell'] },
 ];
+
+function CommandDetails({ command }: { command: ShellCommand }) {
+  return <>
+    <p>{command.executable} · 超时 {command.timeoutMs} ms</p><pre>{JSON.stringify(command.args)}</pre>
+    <p>工作目录</p><pre>{command.cwd}</pre>
+    <p>工作区外只读路径</p><pre>{command.readOnlyPaths.join('\n') || '无'}</pre>
+  </>;
+}
 
 function useWorkspace() {
   const [value, setValue] = useState<WorkspaceState | null>(null);
@@ -77,18 +85,16 @@ export function AgentWork() {
       <h3>计划 / 执行进度</h3><pre>{task.plan || '等待模型制定计划'}</pre><p>已完成 {task.tools.filter(t => t.status === 'completed').length} / {task.tools.length} 次工具调用</p>
       {task.approvals.map(a => <div className="callout" key={a.id}>
         <strong>{a.tool} · {a.status === 'revoked' ? '已撤销（权限更新）' : a.status}</strong>
-        {Array.isArray(a.paths) && a.paths.map((path, i, paths) => <div key={i}>
+        {a.command ? <><CommandDetails command={a.command} /><p>{workspace?.shell.reason}</p></> : Array.isArray(a.paths) && a.paths.map((path, i, paths) => <div key={i}>
           <p>{path.access === 'read' ? '读取' : '修改'}{path.outsideWorkspace ? ' · 工作区外' : ' · 工作区内'}{paths.length > 1 ? (i === 0 ? ' · 源' : ' · 目标') : ''}</p>
           <pre>{path.path}</pre>
         </div>)}
         <pre>{a.description}</pre>
-        {a.status === 'pending' && <><button onClick={() => void action(() => api.decideApproval({ id: a.id, approved: true }))}>仅允许本次</button><button onClick={() => void action(() => api.decideApproval({ id: a.id, approved: false }))}>拒绝</button></>}
+        {a.status === 'pending' && <><button onClick={() => void action(() => api.decideApproval({ id: a.id, approved: true }))}>{a.command ? '仅批准本次请求' : '仅允许本次'}</button><button onClick={() => void action(() => api.decideApproval({ id: a.id, approved: false }))}>拒绝</button></>}
       </div>)}
       <h3>模型回复 / 完成总结</h3><pre aria-live="polite">{task.output || '等待回复…'}</pre>{task.error && <p role="alert">{task.error}</p>}
       <h3>工具及命令记录</h3>{task.tools.map(t => <details key={t.id}><summary>{t.name} · {t.status}</summary>
-        {t.command ? <><p>{t.command.executable} · 超时 {t.command.timeoutMs} ms</p><pre>{JSON.stringify(t.command.args)}</pre>
-          <p>工作目录</p><pre>{t.command.cwd}</pre><p>工作区外只读路径</p><pre>{t.command.readOnlyPaths.join('\n') || '无'}</pre>
-        </> : <pre>{t.arguments}</pre>}
+        {t.command ? <CommandDetails command={t.command} /> : <pre>{t.arguments}</pre>}
         <pre>{t.result}</pre></details>)}
       <h3>文件修改 / Diff</h3>{task.changes.map((c, i) => <details key={i}><summary>{c.operation} · {c.path}</summary><pre>{`--- before\n${c.before}\n+++ after\n${c.after}`}</pre></details>)}
       <p>已报告 Token：{task.usage.reduce((n, u) => n + u.total, 0)}（{task.usage.length} 轮有报告；缺失用量未估算）</p>

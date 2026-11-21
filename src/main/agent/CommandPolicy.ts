@@ -22,14 +22,8 @@ export function commandOperation(input: ShellCommand, security: WorkspaceSecurit
   const cwd = security.operationPath(input.cwd, 'read');
   if (cwd.outsideWorkspace) throw new Error('命令工作目录必须在工作区内');
 
-  const alias = input.executable.toLowerCase().replace(/\.exe$/, '');
-  let executable = alias;
-  if (!aliases.has(alias)) {
-    if (!isAbsolute(input.executable) || !/\.exe$/i.test(input.executable)) throw new Error('请指定支持的命令名或工作区内程序的绝对路径');
-    const target = security.operationPath(input.executable, 'read');
-    if (target.outsideWorkspace) throw new Error('工作区外的程序必须使用内置命令名');
-    executable = target.path;
-  }
+  const executable = input.executable.toLowerCase().replace(/\.exe$/, '');
+  if (!aliases.has(executable)) throw new Error('请使用受支持的内置运行时名称');
 
   const paths = input.readOnlyPaths.map(path => {
     if (!isAbsolute(path)) throw new Error('外部只读路径必须是绝对路径');

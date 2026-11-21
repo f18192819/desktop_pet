@@ -4,7 +4,7 @@
 
 ### 3.3 Windows 命令安全
 
-设置新增按工作区保存的 Shell 权限，默认每次询问。合格的原生命令后端尚未接入，选择始终允许时仍会返回 Shell 已禁用。将文件工具或外部读取权限设为禁止时，当前工作区内依赖该权限的待审批立即撤销。使用 `npm test` 可运行审批、命令拒绝和 Windows Job Object 测试。完整验收状态见 [3.3 交付记录](docs/STAGE3.md#33-windows-命令安全)。
+Shell 权限按工作区保存，默认每次询问。3.3.1 的审批卡会列出命令、参数、工作目录、外部只读路径和超时时间。将相关权限设为禁止或停止任务时，旧审批立即失效。命令沙箱尚未通过完整验收，因此批准请求和设置始终允许都不会启动命令。使用 `npm test` 可验证审批、拒绝执行和 Windows Job Object 清理。环境评估和未验证项目见 [3.3.1 记录](docs/STAGE3.md#331-shell-审批和虚拟化验收)。
 
 Windows Electron + React + TypeScript 桌宠，第二阶段增加 OpenAI-Compatible 实时聊天。用户自行配置 API Key、Base URL、Model ID，保留原有八种动画、窗口、拖动、多屏、托盘和偏好设置。没有新增 SDK 或数据库依赖。
 

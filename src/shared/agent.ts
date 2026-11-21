@@ -9,13 +9,24 @@ export type PermissionMode = 'allow' | 'ask' | 'deny';
 export type ToolPermissions = Record<PermissionKey, PermissionMode>;
 export interface PermissionUpdate { identity: string; tool: PermissionKey; mode: PermissionMode }
 export interface OperationPath { path: string; access: 'read' | 'write'; outsideWorkspace: boolean }
-export interface ShellCommand { executable: string; args: string[]; cwd: string; readOnlyPaths: string[]; timeoutMs: number }
+export interface ShellCommand { executable: string; args: readonly string[]; cwd: string; readOnlyPaths: readonly string[]; timeoutMs: number }
 
 export interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
 export interface AgentMessage { role: 'system' | 'user' | 'assistant' | 'tool'; content: string; tool_calls?: ToolCall[]; tool_call_id?: string }
 export interface ToolRecord { id: string; name: string; arguments: string; status: 'pending' | 'running' | 'completed' | 'failed' | 'interrupted'; result?: string; command?: ShellCommand }
 export interface FileChange { path: string; operation: string; before: string; after: string }
-export interface Approval { id: string; taskId: string; tool: string; description: string; scope: readonly string[]; paths?: readonly OperationPath[]; status: 'pending' | 'approved' | 'denied' | 'revoked' }
+export interface Approval {
+  id: string;
+  taskId: string;
+  tool: string;
+  description: string;
+  scope: readonly string[];
+  paths?: readonly OperationPath[];
+  command?: ShellCommand;
+  workspaceIdentity?: string;
+  requiredPermissions?: readonly PermissionKey[];
+  status: 'pending' | 'approved' | 'denied' | 'revoked';
+}
 export interface AgentTask { id: string; title: string; root: string; rootIdentity?: string; status: 'running' | 'waitingApproval' | 'completed' | 'failed' | 'cancelled' | 'interrupted'; messages: AgentMessage[]; tools: ToolRecord[]; changes: FileChange[]; approvals: Approval[]; plan: string; usage: TokenUsage[]; output: string; error: string; createdAt: number }
 export interface WorkspaceState { root: string | null; identity: string | null; valid: boolean; issue: string | null; permissions: ToolPermissions; shell: { enabled: false; reason: string } }
 export interface AgentSnapshot { tasks: AgentTask[]; activeId: string | null; notice: string }

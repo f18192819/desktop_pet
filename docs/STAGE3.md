@@ -225,3 +225,52 @@ WorkspaceFS 的读、遍历、创建、补丁、复制、移动和删除全部�
 | 26 | 主程序 IPC 和内部凭据文件 | 命令后端未运行 |
 
 运行 `npm ci`、`npm start` 打开桌宠，在设置选择专用测试工作区。把有待审批的文件工具设为禁止，可在工作面板检查卡片即时撤销。把 Shell 权限设为始终允许，工作面板仍须显示禁用。运行 `npm run typecheck`、`npm run build` 和 `npm test` 可复现类型、构建、权限和 Job 夹具检查。完成表中的实际命令测试前，启动入口保持禁用。
+
+## 3.3.1 Shell 审批和虚拟化验收
+
+主进程先验证命令结构和路径，再检查 `shell`。声明外部文件时还检查 `external_read`。任一项为 `deny` 即拒绝。任一项为 `ask` 时使用同一个一次性审批 ID 记录完整命令、工作区身份及全部所需权限。批准后再次检查绑定与权限。权限变为 `deny` 或取消任务时，旧 ID 立即失效。审批卡和工具记录共享命令详情。审批只批准这次请求，未认证的启动入口仍返回「Shell 已禁用」。运行时名称限定为内置候选名称，工作区中的可执行文件路径不能作为启动入口。
+
+### 实际宿主与方案比较
+
+只读检查确认本机为 Windows 11 家庭版 x64 build 26300，并检测到 hypervisor。Virtual Machine Platform 已启用，Windows Hypervisor Platform 已关闭，WSL 2.4.11 可用。Ubuntu 和 Docker Desktop 两个 WSL2 发行版均处于停止状态。PATH 和常见安装目录未发现 QEMU 或 VirtualBox，仓库无 Windows 来宾镜像。未改动 Windows 功能、驱动、服务或其他应用的虚拟化配置。
+
+| 方案 | 结论 |
+| --- | --- |
+| Hyper-V | 首选验收方案。可在支持完整 Hyper-V 的 Windows 11 Pro 或 Enterprise 宿主建立独立 Windows 来宾。家庭版不能安装完整角色，本机也未发现 Hyper-V 管理模块。[微软安装要求](https://learn.microsoft.com/windows-server/virtualization/hyper-v/get-started/install-hyper-v) |
+| WSL2 | 本机已有 Linux 来宾。Windows 文件挂载、Windows 程序互操作和本机转发均为需处理的集成面。关闭这些集成后，仍缺少执行原生 Windows PowerShell、CMD 等工具的独立 Windows 来宾，不作为本阶段后端。[微软 WSL 配置](https://learn.microsoft.com/windows/wsl/wsl-config) |
+| VirtualBox | 可配置独立来宾，须关闭共享目录、剪贴板、拖放和虚拟网络。本机未发现安装，Windows 主机部署涉及额外驱动。[Oracle 用户手册](https://download.virtualbox.org/virtualbox/7.1.12/UserManual.pdf) |
+| QEMU | TCG 软件模拟不在 QEMU 的来宾隔离保障范围内，排除。WHPX 硬件加速可作为另一候选，但需要先验证所用版本、机型及设备是否受安全支持，也需要已启用的 Windows Hypervisor Platform。本机该功能关闭且未安装 QEMU。[QEMU 安全模型](https://www.qemu.org/docs/master/system/security.html) · [WHPX 要求](https://www.qemu.org/docs/master/system/whpx.html) |
+
+当前没有任何 Windows 版本获得 Emma 命令沙箱的支持认证。文件工具和进程夹具能在本机运行，命令启动仍保持禁用。
+
+### 候选闭环和发布条件
+
+1. **导入。** 宿主通过原生句柄绑定工作区身份，生成受限大小的工作区副本和基线清单。只从模型声明且此次获准的外部路径复制普通文件。外部副本放在来宾只读输入盘，不能映射宿主原始工作区或用户目录，也不传入 API Key、CredentialStore 或 Electron IPC。
+2. **执行。** 在支持 Hyper-V 的宿主上以可复位镜像启动无虚拟网卡、无剪贴板、无共享目录的来宾。内置名称映射到受信只读运行时的固定绝对路径。来宾仍须有独立策略阻断 loopback、DNS、IPv4、IPv6，并限制注册表、服务及计划任务。来宾 Job 管理所有后代，宿主在取消或超时时还须停止虚拟机并等待退出。
+3. **导出。** 通过受限通道接收限长的输出、退出状态和变更内容。避免在宿主挂载来宾可写磁盘。拒绝链接、Junction、Hardlink、ADS、设备和其他特殊对象，将任何来宾结果视为不可信。提交前对照基线并重新确认目录身份，由原生文件代理执行写入。只有实际提交的变更才能进入 Diff。
+
+以上三步尚未接入运行时。现有文件代理和原生 Job 夹具各自的通过结果不足以认证命令沙箱。
+
+### 15 项安全验收状态
+
+| 编号 | 验收项 | 实际结果 |
+| --- | --- | --- |
+| 1 | 工作区内读写 | 命令沙箱未运行，已有文件代理回归另行验证 |
+| 2 | 工作区外不能创建、修改、删除 | 命令沙箱未运行 |
+| 3 | 绝对路径不能逃逸 | 命令沙箱未运行 |
+| 4 | Symlink、Junction、Hardlink 不能逃逸 | 命令沙箱未运行，已有文件代理回归另行验证 |
+| 5 | 未授权外部文件不可读 | Shell 权限拒绝已验证，来宾内尚未验证 |
+| 6 | 获准外部文件只读 | 审批已验证，来宾内尚未验证 |
+| 7 | PowerShell、CMD、Python、Node | 命令沙箱未运行 |
+| 8 | Git hooks、npm scripts、subprocess | 命令沙箱未运行 |
+| 9 | DNS、IPv4、IPv6、Loopback | 命令沙箱未运行 |
+| 10 | 注册表、服务、计划任务、启动项 | 命令沙箱未运行 |
+| 11 | API Key 隔离 | 命令沙箱未运行 |
+| 12 | 取消终止整个进程树 | Agent 审批取消及原生固定 Job 终止夹具已验证，来宾命令尚未验证 |
+| 13 | 超时终止整个进程树 | 原生固定 Job 超时夹具已验证，来宾命令尚未验证 |
+| 14 | 导出经原生代理校验 | 来宾导出及提交协议未接入 |
+| 15 | 工作区身份变化拒绝提交 | 文件代理拒绝变化的根身份，来宾导出提交尚未验证 |
+
+失败关闭回归使用真实宿主外部 sentinel，检查内容、文件 ID、硬链接数、大小和修改、变更时间。该测试验证批准后仍拒绝启动，不属于运行命令后的隔离验收。
+
+本次 `npm run typecheck` 和 `npm run build` 通过。`npm test` 共 42 项通过、0 项跳过，最后又复跑 6 项相关审批和原生进程测试，全部通过。
