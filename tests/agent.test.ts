@@ -11,11 +11,13 @@ import { ToolAccumulator, AgentProvider } from '../src/main/agent/AgentProvider'
 import { validateShellTool, validateTool } from '../src/main/agent/ToolRegistry';
 import { AgentService } from '../src/main/agent/AgentService';
 import { ShellExecutor } from '../src/main/agent/ShellExecutor';
+import { SandboxLauncher } from '../src/main/agent/SandboxLauncher';
 import { PermissionManager } from '../src/main/agent/PermissionManager';
 import { defaultPermissions } from '../src/main/agent/WorkspaceConfig';
 import { READ_TOOLS, WRITE_TOOLS } from '../src/shared/agent';
 import type { AgentMessage, ToolCall } from '../src/shared/agent';
 import type { ProviderConfig } from '../src/shared/chat';
+import type { PetActivityEvent } from '../src/shared/types';
 mkdirSync('.test-build', { recursive: true });
 const fixture = () => { const dir = mkdtempSync(resolve('.test-build/agent-')); const root = join(dir, 'work'); mkdirSync(root); return { dir, root }; };
 const config: ProviderConfig = { name: 'test', baseUrl: 'https://example.invalid/v1', model: 'fixture', adapter: 'openai-compatible', timeoutMs: 1000, includeUsage: true };
@@ -224,8 +226,8 @@ test('一次性审批、取消和 Shell fail closed', async () => {
   c.abort();
   assert.equal(await cancelled, 'denied');
   const command = { executable: 'git', args: ['status'], cwd: '.', readOnlyPaths: [], timeoutMs: 1000 };
-  assert.throws(() => new ShellExecutor().execute(command, new AbortController().signal), /Shell 已禁用/);
-  assert.throws(() => new ShellExecutor().execute(command, c.signal), { name: 'AbortError' });
+  await assert.rejects(new ShellExecutor().execute(command, new AbortController().signal), /Shell 已禁用/);
+  await assert.rejects(new ShellExecutor().execute(command, c.signal), { name: 'AbortError' });
 });
 test('Agent 持久化先于执行、审批取消、恢复不重放 pending 写入', async () => {
   const { dir, root } = fixture(); const data = join(dir, 'data');
@@ -329,14 +331,14 @@ test('停止任务会等待代理退出，未知结果标记 interrupted 并结�
   } finally { await service.dispose(); }
 });
 
-function scriptedAgent(data: string) {
+function scriptedAgent(data: string, activity: (event: PetActivityEvent) => void = () => {}) {
   let calls: ToolCall[] = [];
   let modelResults: string[] = [];
   const fake = { turn: async (messages: AgentMessage[]) => {
     modelResults = messages.filter(message => message.role === 'tool').map(message => message.content);
     return { content: '', calls: calls.splice(0) };
   } } as unknown as AgentProvider;
-  const service = new AgentService(data, () => fake, () => {});
+  const service = new AgentService(data, () => fake, activity);
   function start(batch: [string, object][]) {
     calls = batch.map(([name, args], i) => ({ id: `call-${i}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }));
     return service.start('permission fixture');
@@ -658,7 +660,80 @@ test('Shell 审批：权限变更立即撤销，取消任务使原审批失效',
   } finally { await service.dispose(); }
 });
 
-test('Windows 原生 Job 夹具：终止进程树、超时清理、关闭即清理、禁止 breakaway', async () => {
+test('Shell 异步接口：先保存 running 并触发 working，分别处理输出、退出码和异常', async t => {
+  const { dir, root } = fixture();
+  const data = join(dir, 'data');
+  const activity: PetActivityEvent['activity'][] = [];
+  const agent = scriptedAgent(data, event => activity.push(event.activity));
+  const { service } = agent;
+  const results = [
+    { exitCode: 0, stdout: 'output', stderr: 'warning' },
+    { exitCode: 7, stdout: 'partial', stderr: 'failure' },
+    { exitCode: null, stdout: '', stderr: 'terminated' },
+  ];
+  let call = 0;
+  t.mock.method(SandboxLauncher.prototype, 'launch', async () => {
+    const entry = service.snapshot().tasks[0].tools.at(-1);
+    assert.equal(entry?.status, 'running');
+    assert.equal(activity.at(-1), 'working');
+    const saved = JSON.parse(readFileSync(join(data, 'agent-sessions.json'), 'utf8'));
+    assert.equal(saved.tasks[0].tools.at(-1).status, 'running');
+    await new Promise(resolve => setImmediate(resolve));
+    if (call === results.length) throw new Error('backend error');
+    return results[call++];
+  });
+  try {
+    await service.setWorkspace(root);
+    service.setToolPermission('shell', 'allow', service.workspaceState().identity);
+    const command = { executable: 'git', args: ['status'], cwd: '.', readOnlyPaths: [], timeoutMs: 500 };
+    await agent.start(Array.from({ length: 4 }, () => ['shell', command]));
+    const task = await agent.done();
+    assert.deepEqual(task.tools.map(tool => tool.status), ['completed', 'failed', 'failed', 'failed']);
+    assert.deepEqual(task.tools.slice(0, 3).map(tool => JSON.parse(tool.result!)), results);
+    assert.equal(task.tools[3].result, 'backend error');
+    assert.deepEqual(agent.modelResults(), task.tools.map(tool => tool.result));
+  } finally { await service.dispose(); }
+});
+
+test('Shell 异步接口：取消等待后端清理完成，并中断当前工具记录', async t => {
+  const { dir, root } = fixture();
+  const agent = scriptedAgent(join(dir, 'data'));
+  const { service } = agent;
+  let releaseCleanup = () => {};
+  const cleanup = new Promise<void>(resolve => { releaseCleanup = resolve; });
+  let receivedSignal: AbortSignal | undefined;
+  const result = { exitCode: null, stdout: 'partial before abort', stderr: '' };
+  t.mock.method(SandboxLauncher.prototype, 'launch', async (_command: unknown, signal: AbortSignal) => {
+    receivedSignal = signal;
+    await cleanup;
+    return result;
+  });
+  try {
+    await service.setWorkspace(root);
+    service.setToolPermission('shell', 'allow', service.workspaceState().identity);
+    const id = await agent.start([['shell', { executable: 'git', args: ['status'], cwd: '.', readOnlyPaths: [], timeoutMs: 500 }]]);
+    await until(() => receivedSignal !== undefined);
+    let stopped = false;
+    const cancelled = service.cancel(id).then(() => { stopped = true; });
+    assert.equal(receivedSignal?.aborted, true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(stopped, false);
+    assert.equal(service.snapshot().activeId, id);
+    assert.throws(() => service.assertIdle(), /等待当前 Agent/);
+    releaseCleanup();
+    await cancelled;
+    const task = await agent.done();
+    assert.equal(task.status, 'cancelled');
+    assert.equal(task.tools[0].status, 'interrupted');
+    assert.deepEqual(JSON.parse(task.tools[0].result!), result);
+    assert.equal(task.messages.some(message => message.role === 'tool'), false);
+  } finally {
+    releaseCleanup();
+    await service.dispose();
+  }
+});
+
+test('Windows 原生 Job 夹具：计时器触发终止及零残留进程、关闭即清理、禁止 breakaway', async () => {
   const { root } = fixture();
   for (const mode of ['terminate', 'timeout', 'close', 'breakaway']) {
     const { stdout } = await promisify(execFile)(resolve('.test-build/JobProcess.Tests.exe'), [mode, join(root, mode)], {

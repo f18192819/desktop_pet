@@ -230,6 +230,10 @@ WorkspaceFS 的读、遍历、创建、补丁、复制、移动和删除全部�
 
 主进程先验证命令结构和路径，再检查 `shell`。声明外部文件时还检查 `external_read`。任一项为 `deny` 即拒绝。任一项为 `ask` 时使用同一个一次性审批 ID 记录完整命令、工作区身份及全部所需权限。批准后再次检查绑定与权限。权限变为 `deny` 或取消任务时，旧 ID 立即失效。审批卡和工具记录共享命令详情。审批只批准这次请求，未认证的启动入口仍返回「Shell 已禁用」。运行时名称限定为内置候选名称，工作区中的可执行文件路径不能作为启动入口。
 
+Agent 先保存工具状态 `running` 并触发 `working`，再等待 ShellExecutor 的 Promise。成功返回的结果分别记录 stdout、stderr 和退出码。退出码为零时工具完成，非零或无退出码时记为失败。启动门禁的拒绝则记录错误。任务取消后等待执行 Promise 完成清理，期间仍占用 Agent 执行槽位。接口要求未来后端在收到取消信号时终止整个进程树，并在进程和输出流关闭后才结束 Promise。当前生产门禁直接拒绝，Agent 测试以受控替身验证结果处理和取消等待。
+
+原生 Job 的超时模式现在由一次性 250 ms `.NET Timer` 回调调用 `TerminateJobObject`。回调终止前确认根进程和子进程仍在 Job 内运行。测试随后等待两个原始进程句柄发出退出信号，检查退出码均为 1460，并确认 Job 活动进程计数回到零。此前的测试由主线程等待 100 ms 后显式终止，仅覆盖显式终止路径。此次测试验证固定进程夹具的定时终止。[.NET Timer](https://learn.microsoft.com/dotnet/api/system.threading.timer.-ctor?view=netframework-4.8) · [Job Accounting](https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-jobobject_basic_accounting_information)
+
 ### 实际宿主与方案比较
 
 只读检查确认本机为 Windows 11 家庭版 x64 build 26300，并检测到 hypervisor。Virtual Machine Platform 已启用，Windows Hypervisor Platform 已关闭，WSL 2.4.11 可用。Ubuntu 和 Docker Desktop 两个 WSL2 发行版均处于停止状态。PATH 和常见安装目录未发现 QEMU 或 VirtualBox，仓库无 Windows 来宾镜像。未改动 Windows 功能、驱动、服务或其他应用的虚拟化配置。
@@ -266,11 +270,11 @@ WorkspaceFS 的读、遍历、创建、补丁、复制、移动和删除全部�
 | 9 | DNS、IPv4、IPv6、Loopback | 命令沙箱未运行 |
 | 10 | 注册表、服务、计划任务、启动项 | 命令沙箱未运行 |
 | 11 | API Key 隔离 | 命令沙箱未运行 |
-| 12 | 取消终止整个进程树 | Agent 审批取消及原生固定 Job 终止夹具已验证，来宾命令尚未验证 |
-| 13 | 超时终止整个进程树 | 原生固定 Job 超时夹具已验证，来宾命令尚未验证 |
+| 12 | 取消终止整个进程树 | Agent 审批取消及等待后端清理已测试，固定 Job 终止已原生验证，来宾命令待验证 |
+| 13 | 超时终止整个进程树 | 固定 Job 计时器回调终止、两进程退出及零活动进程已原生验证，来宾命令待验证 |
 | 14 | 导出经原生代理校验 | 来宾导出及提交协议未接入 |
 | 15 | 工作区身份变化拒绝提交 | 文件代理拒绝变化的根身份，来宾导出提交尚未验证 |
 
 失败关闭回归使用真实宿主外部 sentinel，检查内容、文件 ID、硬链接数、大小和修改、变更时间。该测试验证批准后仍拒绝启动，不属于运行命令后的隔离验收。
 
-本次 `npm run typecheck` 和 `npm run build` 通过。`npm test` 共 42 项通过、0 项跳过，最后又复跑 6 项相关审批和原生进程测试，全部通过。
+3.3.1 首轮交付的类型检查和构建通过，42 项自动测试通过。异步执行与超时夹具修复后，`npm run typecheck`、`npm run build` 和 `npm test` 均通过，44 项测试通过、0 项跳过。

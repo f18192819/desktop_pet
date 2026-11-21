@@ -227,17 +227,22 @@ export class AgentService implements AgentRuntime {
               this.permissions.assertAllowed(this.workspacePermissions(), required);
             }
             current();
-            let output: unknown;
+            entry.status = 'running'; activity('working'); this.save();
+            current();
             if (operation.kind === 'shell') {
-              output = this.shell.execute(operation.command, signal);
+              const { stdout, stderr, exitCode } = await this.shell.execute(operation.command, signal);
+              entry.result = JSON.stringify({ exitCode, stdout, stderr });
+              current();
+              entry.status = exitCode === 0 ? 'completed' : 'failed';
             } else {
-              entry.status = 'running'; activity('working'); this.save();
+              let output: unknown;
               if (operation.kind === 'file') output = await fs.execute(operation.tool, operation.args, signal);
               else { task.plan = operation.plan; output = '计划已更新'; }
+              entry.result = typeof output === 'string' ? output : JSON.stringify(output);
+              entry.status = 'completed';
             }
-            entry.result = typeof output === 'string' ? output : JSON.stringify(output); entry.status = 'completed';
           } catch (error) {
-            entry.result = error instanceof Error ? error.message : '工具执行失败';
+            entry.result ??= error instanceof Error ? error.message : '工具执行失败';
             if (signal.aborted || error instanceof WorkspaceOperationInterrupted) {
               entry.status = 'interrupted';
               throw error;
@@ -271,6 +276,7 @@ export class AgentService implements AgentRuntime {
     for (const approval of task.approvals) if (approval.status === 'pending') approval.status = 'denied';
     for (const tool of task.tools) if (tool.status === 'running' || tool.status === 'pending') tool.status = 'interrupted';
     this.activity({ source: 'agent', taskId: id, activity: 'idle' });
+    // Keep the task active until the awaited executor has finished cleanup.
     try { this.save(); } finally { await active.done; }
   }
   async dispose() {
